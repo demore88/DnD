@@ -22,5 +22,10 @@ jobs:
           if ! flyctl volumes list --app "$APP" --json | grep -q '"name": *"data"'; then
             flyctl volumes create data --app "$APP" --region "$REGION" --size 1 --yes
           fi
+      - name: Hand the AI Dungeon Master its key (if the repo has one)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" | flyctl secrets import --app "$APP" --stage; fi
       - name: Deploy
         run: flyctl deploy --remote-only --app "$APP"
