@@ -102,7 +102,7 @@ function handle(c, u, op, b) {
       }
       let err = needTurn(c, ch); if (err) return { error: err };
       if (c.turn.res.attacksLeft <= 0) { if (!c.turn.res.action) return { error: 'No attacks left — end your turn or use a bonus action' }; c.turn.res.action = 0; c.turn.res.attacksLeft = E.attacksPerAction(ch); }
-      const range = w.range || 1; if (cheb(t, tgt) > range) return { error: `${tgt.name} is out of reach${range === 1 ? ' — move next to it' : ` (range ${range})`}` };
+      const range = w.range || (ch.features.includes('long_limbed') && !w.ranged ? 2 : 1); if (cheb(t, tgt) > range) return { error: `${tgt.name} is out of reach${range === 1 ? ' — move next to it' : ` (range ${range})`}` };
       if (b.reckless && ch.features.includes('reckless_attack') && !c.turn.res.attacked) { E.addCond(c, t, 'reckless', 1); }
       c.turn.res.attacksLeft--; c.turn.res.attacked = true; if (w.light && !w.ranged) c.turn.res.lightUsed = true;
       E.pcAttack(c, ch, t, tgt, w, { smite: !!b.smite, adv: b.reckless && ch.features.includes('reckless_attack') ? 'adv' : null });
@@ -121,6 +121,16 @@ function handle(c, u, op, b) {
       const usesMax = E.featureUses(ch, k); if (usesMax != null && (ch.uses[k] || 0) >= usesMax) return { error: `No uses of ${F.name} left — rest to recover` };
       const cost = F.kind === 'free' ? 'free' : F.kind; const err = needTurn(c, ch, cost); if (err) return { error: err };
       const use = () => { ch.uses[k] = (ch.uses[k] || 0) + 1; };
+      if (k === 'feline_agility') { if (!inCombat) return { error: 'Save it for a fight — out of combat you can already run anywhere' }; use(); spend(c, 'bonus'); c.turn.res.move += Math.floor(ch.speed / 5); E.addLog(c, 'feature', `🐈 ${ch.name} bursts into a blur of Feline Agility — double speed!`, { who: ch.name, fx: { k: 'buff', t: t.id, name: 'Feline Agility' } }); return { ok: true }; }
+      if (k === 'healing_hands') { const tg = tokenById(b.targetId) || t; const tch = tg && E.charOfToken(c, tg); if (!tch || cheb(t, tg) > 1) return { error: 'Touch an ally (stand next to them)' }; if (tch.dead) return { error: 'Too late for healing hands — try the temple' }; use(); spend(c, 'action'); const h = E.heal(c, tg, E.rollDice(`${ch.level}d4`).total); E.addLog(c, 'feature', `😇 Light pours from ${ch.name}'s hands into ${tch.name}: +${h} HP`, { who: ch.name, fx: { k: 'heal', t: tg.id, amt: h } }); return { ok: true }; }
+      if (k === 'shell_defense') { if (!inCombat) return { error: 'Only needed in combat' }; spend(c, 'action'); E.addCond(c, t, 'shelled', 1); E.addLog(c, 'feature', `🐢 ${ch.name} pulls into their shell! (+4 AC until their next turn)`, { who: ch.name, fx: { k: 'buff', t: t.id, name: 'Shell' } }); return { ok: true }; }
+      if (k === 'hidden_step') { use(); spend(c, 'bonus'); E.addCond(c, t, 'hidden', 2); E.addLog(c, 'feature', `🍃 ${ch.name} takes a Hidden Step and fades from sight!`, { who: ch.name, fx: { k: 'buff', t: t.id, name: 'Invisible' } }); return { ok: true }; }
+      if (k === 'hungry_jaws') {
+        const tg = tokenById(b.targetId); if (!tg || tg.kind !== 'monster' || cheb(t, tg) > 1) return { error: 'Pick an adjacent enemy' };
+        use(); spend(c, 'bonus'); const jaw = Object.assign(E.makeWeapon('unarmed'), { name: 'Hungry Jaws', dice: '1d6', type: 'piercing', ab: 'str' });
+        const r = E.pcAttack(c, ch, t, tg, jaw); if (r.hit) { const tmp = Math.max(1, R.mod(ch.scores.con)); ch.temp = Math.max(ch.temp || 0, tmp); E.addLog(c, 'feature', `🦎 ${ch.name} gulps down the victory: +${tmp} temp HP`, { who: ch.name }); }
+        afterCombatAction(c); return { ok: true };
+      }
       if (k === 'rage') { if (!inCombat) return { error: 'Save your rage for a fight' }; use(); spend(c, 'bonus'); E.addCond(c, t, 'raging', 10); E.addLog(c, 'feature', `😤 ${ch.name} flies into a RAGE!`, { who: ch.name, fx: { k: 'buff', t: t.id, name: 'Rage' } }); return { ok: true }; }
       if (k === 'second_wind') { use(); spend(c, 'bonus'); const h = E.heal(c, t, E.rollDice('1d10').total + ch.level); E.addLog(c, 'feature', `💪 ${ch.name} catches a Second Wind: +${h} HP`, { who: ch.name, fx: { k: 'heal', t: t.id, amt: h } }); return { ok: true }; }
       if (k === 'action_surge') { if (!inCombat) return { error: 'Only in combat' }; use(); c.turn.res.action = 1; c.turn.res.attacksLeft = 0; E.addLog(c, 'feature', `⚡ ${ch.name} surges with ACTION SURGE — another action!`, { who: ch.name, fx: { k: 'buff', t: t.id, name: 'Action Surge' } }); return { ok: true }; }
@@ -132,7 +142,7 @@ function handle(c, u, op, b) {
       return { error: `${F.name} works automatically` };
     }
     case 'basic': {
-      const k = b.kind; const bonusOk = ch && ch.features.includes('cunning_action') && ['dash', 'hide'].includes(k) && b.bonus;
+      const k = b.kind; const bonusOk = ch && b.bonus && (((ch.features.includes('cunning_action') || ch.features.includes('nimble_escape')) && ['dash', 'hide'].includes(k)) || (ch.features.includes('aggressive') && k === 'dash'));
       const cost = bonusOk ? 'bonus' : 'action'; const err = needTurn(c, ch, cost); if (err) return { error: err };
       if (k === 'dash') { if (!inCombat) return { error: 'Only needed in combat' }; spend(c, cost); c.turn.res.move += Math.floor(ch.speed / 5); E.addLog(c, 'system', `🏃 ${ch.name} dashes!`); return { ok: true }; }
       if (k === 'dodge') { spend(c, cost); E.addCond(c, t, 'dodging', 1); E.addLog(c, 'system', `💨 ${ch.name} takes the Dodge action — attacks against them have disadvantage.`); return { ok: true }; }

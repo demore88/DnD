@@ -50,9 +50,13 @@
     const sw = (key, list, allowNone) => `<div class="swatches">${allowNone ? `<button class="sw none ${!look[key] ? 'on' : ''}" data-lk="${key}" data-v="">✕</button>` : ''}${list.map(c => `<button class="sw ${look[key] === c ? 'on' : ''}" style="background:${c}" data-lk="${key}" data-v="${c}"></button>`).join('')}</div>`;
     const chips = (key, opts, cur) => `<div class="chips">${opts.map(([v, l]) => `<button class="chip ${String(cur) === String(v) ? 'on' : ''}" data-lk="${key}" data-v="${v}">${l}</button>`).join('')}</div>`;
     const beardDef = look.beard != null ? look.beard : (race === 'Dwarf' ? 3 : 0);
-    const buildDef = look.build != null ? look.build : (race === 'Half-Orc' || race === 'Dragonborn' || cls === 'Barbarian' ? 2 : race === 'Elf' ? 0 : 1);
+    const buildDef = look.build != null ? look.build : (ART.BIGB[race] != null ? Math.max(ART.BIGB[race], cls === 'Barbarian' ? 2 : 0) : cls === 'Barbarian' ? 2 : 1);
+    const skinLbl = { Tabaxi: 'Fur', Bugbear: 'Fur', Kenku: 'Feathers', Kobold: 'Scales', Lizardfolk: 'Scales', Tortle: 'Skin', Triton: 'Skin' }[race] || 'Skin';
+    const skinList = ART.RACE_PAL[race] ? ART.RACE_PAL[race].concat(SW.skin.slice(0, 3)) : SW.skin;
+    if (!look.skin && ART.RACE_SKIN[race]) look.skin = ART.RACE_SKIN[race];
     return `<div class="lookedit">
-      ${race === 'Dragonborn' ? `<div class="small">Scales</div>${sw('scale', SW.scale)}` : `<div class="small">Skin</div>${sw('skin', SW.skin)}`}
+      ${race === 'Dragonborn' ? `<div class="small">Scales</div>${sw('scale', SW.scale)}` : `<div class="small">${skinLbl}</div>${sw('skin', skinList)}`}
+      ${race === 'Tortle' ? `<div class="small">Shell</div>${sw('shell', ['#4f6a3a', '#6b5a3a', '#3a5a5a', '#8a6a3a', '#5a4a6a', '#2f4a2f'], true)}` : ''}
       <div class="small">Hair color</div>${sw('hair', SW.hair)}
       <div class="small">Hair style</div>${chips('hairStyle', ART.HAIR_STYLES.map((h, i) => [i, h]), look.hairStyle || 0)}
       ${race !== 'Dragonborn' ? `<div class="small">Facial hair</div>${chips('beard', ART.BEARDS.map((h, i) => [i, h]), beardDef)}` : ''}
@@ -264,7 +268,7 @@
   }
   function reachable() {
     const C = S.C, s = C.scene, t = myTok(); if (!t || !C.turn.res) return null; const budget = C.turn.res.move; if (budget <= 0) return null;
-    const blk = new Set(['#', '~', 'T', 'r', '^', 'o', 'b', 't', 'w', 'f', 'G', 'h', 'c']); const diff = new Set(['%', 'x']);
+    const blk = new Set(['#', '~', 'T', 'r', '^', 'o', 'b', 't', 'w', 'f', 'G', 'h', 'c']); if (RR.RACES[myChar()?.race]?.swim) blk.delete('~'); const diff = new Set(['%', 'x']);
     const occ = new Set(s.tokens.filter(o => o.id !== t.id && !o.dead).map(o => o.y * s.w + o.x));
     const enemy = new Set(s.tokens.filter(o => o.kind === 'monster' || o.kind === 'npc' || o.kind === 'mimic').map(o => o.y * s.w + o.x));
     const traps = new Set(s.pois.filter(p => p.type === 'trap' && !p.disarmed).map(p => p.y * s.w + p.x));
@@ -400,7 +404,7 @@
   function weaponStats(ch, w) {
     const ab = w.ab === 'fin' ? (ch.scores.dex >= ch.scores.str ? 'dex' : 'str') : (ch.class === 'Monk' && (w.k === 'unarmed' || w.k === 'shortsword') && ch.scores.dex > ch.scores.str ? 'dex' : w.ab);
     const m = RR.mod(ch.scores[ab]); let dice = w.dice; if (ch.class === 'Monk' && w.k === 'unarmed') dice = ch.level >= 5 ? '1d6' : '1d4';
-    return { hit: m + RR.prof(ch.level) + (w.plus || 0), dmg: `${dice}${(m + (w.plus || 0)) ? fmt(m + (w.plus || 0)) : ''}`, range: w.range || 1 };
+    return { hit: m + RR.prof(ch.level) + (w.plus || 0), dmg: `${dice}${(m + (w.plus || 0)) ? fmt(m + (w.plus || 0)) : ''}`, range: w.range || (ch.features.includes('long_limbed') && !w.ranged ? 2 : 1) };
   }
   function startAttack(wi = null, preTarget = null) {
     const ch = myChar(); const t = myTok();
@@ -570,7 +574,8 @@
       $$('[data-f]', m).forEach(b => b.onclick = () => {
         const k = b.dataset.f; const t = myTok();
         if (k === 'martial_arts' || k === 'flurry') { const valid = new Set(foes().filter(f => cheb(f, t) <= 1).map(f => f.id)); return setTarget({ title: k === 'flurry' ? '👊 Flurry of Blows' : '👊 Bonus unarmed strike', hint: 'Tap an adjacent enemy', valid, pick: async (hit) => { const tk = hit?.token; if (!tk || !valid.has(tk.id)) return true; await act(k === 'flurry' ? 'feature' : 'attack', k === 'flurry' ? { key: 'flurry', targetId: tk.id } : { targetId: tk.id, unarmedBonus: true }).catch(() => { }); S.target = null; renderPlay(); return true; } }); }
-        if (k === 'bardic_inspiration' || k === 'lay_on_hands') { const valid = new Set(allies().filter(a => (k === 'lay_on_hands' ? cheb(a, t) <= 1 : a.id !== t.id && cheb(a, t) <= 12)).map(a => a.id)); return setTarget({ title: RR.FEATURES[k].name, hint: 'Tap a hero', valid, color: '#8fd16a', pick: async (hit) => { const tk = hit?.token; if (!tk || !valid.has(tk.id)) return true; await act('feature', { key: k, targetId: tk.id }).catch(() => { }); S.target = null; renderPlay(); return true; } }); }
+        if (k === 'hungry_jaws') { const valid = new Set(foes().filter(f => cheb(f, t) <= 1).map(f => f.id)); return setTarget({ title: '🦎 Hungry Jaws', hint: 'Tap an adjacent enemy to bite', valid, pick: async (hit) => { const tk = hit?.token; if (!tk || !valid.has(tk.id)) return true; await act('feature', { key: k, targetId: tk.id }).catch(() => { }); S.target = null; renderPlay(); return true; } }); }
+        if (k === 'bardic_inspiration' || k === 'lay_on_hands' || k === 'healing_hands') { const valid = new Set(allies().filter(a => (k !== 'bardic_inspiration' ? cheb(a, t) <= 1 : a.id !== t.id && cheb(a, t) <= 12)).map(a => a.id)); return setTarget({ title: RR.FEATURES[k].name, hint: 'Tap a hero', valid, color: '#8fd16a', pick: async (hit) => { const tk = hit?.token; if (!tk || !valid.has(tk.id)) return true; await act('feature', { key: k, targetId: tk.id }).catch(() => { }); S.target = null; renderPlay(); return true; } }); }
         if (k === 'breath_weapon') { let spot = null; const tg = { title: '🐲 Breath Weapon', hint: 'Tap where to breathe (within 3), tap again to fire', range: { x: t.x, y: t.y, r: 3 }, valid: new Set(), pick: async (hit, pos) => { if (cheb(pos, t) > 3) { toast('Too far'); return true; } if (spot && spot.x === pos.x && spot.y === pos.y) { await act('feature', { key: k, x: pos.x, y: pos.y }).catch(() => { }); S.target = null; renderPlay(); return true; } spot = pos; tg.area = { x: pos.x, y: pos.y, r: 1 }; S.target = tg; renderPlay(); return true; } }; return setTarget(tg); }
         closeSheet(); act('feature', { key: k }).catch(() => { });
       });
@@ -590,7 +595,7 @@
     });
   }
   function moreSheet() {
-    const ch = myChar(); const r = S.C.turn.res; const cunning = ch.features.includes('cunning_action');
+    const ch = myChar(); const r = S.C.turn.res; const cunning = ch.features.includes('cunning_action') || ch.features.includes('nimble_escape'); const dashB = cunning || ch.features.includes('aggressive');
     const t = myTok(); const restrained = t && t.conds.includes('restrained');
     if (!inCombat()) {
       sheet(`<h2>More</h2><div class="col">
@@ -605,7 +610,7 @@
     const b = (k, label, desc, cost, ok = true) => `<button class="spell ${ok ? '' : 'off'}" data-k="${k}" data-bonus="${cost === 'bonus' ? 1 : ''}" ${ok ? '' : 'disabled'}><div class="row"><b class="grow">${label}</b><span class="tag ${cost === 'bonus' ? 'blue' : ''}">${cap(cost)}</span></div><div class="small muted">${desc}</div></button>`;
     sheet(`<h2>More actions</h2>
       ${restrained ? b('breakfree', '💪 Break free', 'Athletics or Acrobatics vs DC 12.', 'action', r.action) : ''}
-      ${b('dash', '🏃 Dash', 'Double your movement this turn.', cunning && r.bonus ? 'bonus' : 'action', r.action || (cunning && r.bonus))}
+      ${b('dash', '🏃 Dash', 'Double your movement this turn.', dashB && r.bonus ? 'bonus' : 'action', r.action || (dashB && r.bonus))}
       ${b('dodge', '💨 Dodge', 'Attacks against you have disadvantage until your next turn.', 'action', r.action)}
       ${b('hide', '🫥 Hide', 'Stealth check. If hidden, your next attack has advantage.', cunning && r.bonus ? 'bonus' : 'action', r.action || (cunning && r.bonus))}
       ${ch.weapons.filter(w => w.light && !w.ranged).length >= 2 ? b('offhand', '🗡️ Off-hand attack', 'After attacking with a light weapon, strike with the other.', 'bonus', r.bonus && r.lightUsed) : ''}
@@ -745,10 +750,10 @@
     const HA = ['#1d140e', '#4a2c17', '#8a5a2b', '#d9a62e', '#e8e0d0', '#b5452c', '#2f5b9a', '#5a5a5a'];
     const CL = ['#b5452c', '#2f5b9a', '#4f8a3a', '#8a4fa3', '#3b3b46', '#d9a62e', '#c7782e', '#5b6f86'];
     main.innerHTML = `<div class="scroll creator">
-      <div class="card preview"><div class="portrait">${ART.heroSVG(look, st.class, st.race, 120, { main: { Wizard: 'staff' }[st.class] || RR.CLASSES[st.class].start.weapons[0], off: RR.CLASSES[st.class].start.shield ? 'shield' : undefined })}</div><div class="grow"><input id="hn" value="${esc(st.name)}" maxlength="24" placeholder="Hero name"><div class="small">${esc(st.race)} ${esc(st.class)} · ❤️ ${hp} HP · 🛡️ AC ${RR.computeAC({ class: st.class, scores: Object.fromEntries(RR.ABILITIES.map(a => [a, fin(a)])), equip: { armor: C.start.armor, shield: C.start.shield }, features: RR.featuresAt(st.class, 1) })}</div><button class="chip" id="rndName">🎲 Random name</button></div></div>
+      <div class="card preview"><div class="portrait">${ART.heroSVG(look, st.class, st.race, 120, { main: { Wizard: 'staff' }[st.class] || RR.CLASSES[st.class].start.weapons[0], off: RR.CLASSES[st.class].start.shield ? 'shield' : undefined })}</div><div class="grow"><input id="hn" value="${esc(st.name)}" maxlength="24" placeholder="Hero name"><div class="small">${esc(st.race)} ${esc(st.class)} · ❤️ ${hp} HP · 🛡️ AC ${RR.computeAC({ race: st.race, class: st.class, scores: Object.fromEntries(RR.ABILITIES.map(a => [a, fin(a)])), equip: { armor: C.start.armor, shield: C.start.shield }, features: RR.featuresAt(st.class, 1) })}</div><button class="chip" id="rndName">🎲 Random name</button></div></div>
       <h3>1 · Class</h3><div class="picks">${Object.keys(RR.CLASSES).map(k => `<button class="pick ${st.class === k ? 'on' : ''}" data-class="${k}">${ART.heroSVG(Object.assign({}, look, { cloak: RR.CLASSES[k].color, headgear: 'auto', trim: null }), k, st.race, 54)}<b>${k}</b></button>`).join('')}</div>
       <div class="blurb">${C.icon} <b>${st.class}:</b> ${esc(C.blurb)}</div>
-      <h3>2 · Race</h3><div class="picks race">${Object.keys(RR.RACES).map(r => `<button class="pick ${st.race === r ? 'on' : ''}" data-race="${r}">${ART.heroSVG(Object.assign({}, look, { headgear: 'none', beard: undefined, build: undefined }), null, r, 50, { gear: false })}<b>${r}</b><span>${Object.entries(RR.RACES[r].bonus).map(([k, v]) => k.toUpperCase() + '+' + v).join(' ').replace('STR+1 DEX+1 CON+1 INT+1 WIS+1 CHA+1', 'All +1')}</span></button>`).join('')}</div>
+      <h3>2 · Race</h3><div class="picks race">${Object.keys(RR.RACES).map(r => `<button class="pick ${st.race === r ? 'on' : ''}" data-race="${r}">${ART.heroSVG(Object.assign({}, look, { headgear: 'none', beard: undefined, build: undefined, skin: r === st.race ? look.skin : (ART.RACE_SKIN[r] || (ART.RACE_SKIN[st.race] ? '#e0b48a' : look.skin)) }), null, r, 50, { gear: false })}<b>${r}</b><span>${Object.entries(RR.RACES[r].bonus).map(([k, v]) => k.toUpperCase() + '+' + v).join(' ').replace('STR+1 DEX+1 CON+1 INT+1 WIS+1 CHA+1', 'All +1')}</span></button>`).join('')}</div>
       <div class="blurb"><b>${st.race}:</b> ${esc(race.blurb)} ${esc(race.traits.join(' · '))}</div>
       <h3>3 · Abilities</h3><div class="row wrap"><button class="chip ${st.method === 'std' ? 'on' : ''}" id="mStd">✨ Recommended</button><button class="chip ${st.method === 'roll' ? 'on' : ''}" id="mRoll">🎲 Roll 4d6</button></div>
       <div class="abil edit">${RR.ABILITIES.map(a => `<div class="card ab"><div class="k">${a.toUpperCase()}${a === C.primary ? ' ⭐' : ''}</div><div class="m">${fin(a)}</div><div class="s">${fmt(RR.mod(fin(a)))}</div><div class="row"><button class="mini" data-dn="${a}">◀</button><button class="mini" data-up="${a}">▶</button></div></div>`).join('')}</div>
@@ -760,7 +765,7 @@
     const keep = () => { st.name = $('#hn').value; st.backstory = $('#hb').value; };
     const rer = () => { keep(); const sc = $('.creator').scrollTop; renderCreator(); $('.creator').scrollTop = sc; };
     $$('[data-class]').forEach(b => b.onclick = () => { st.class = b.dataset.class; st.skills = []; st.look.cloak = null; autoAssign(st); rer(); });
-    $$('[data-race]').forEach(b => b.onclick = () => { st.race = b.dataset.race; rer(); });
+    $$('[data-race]').forEach(b => b.onclick = () => { const prev = st.race; st.race = b.dataset.race; const pal = (r) => ART.RACE_PAL[r] || SW.skin; if (!pal(st.race).includes(st.look.skin) || (ART.RACE_SKIN[prev] && st.look.skin === ART.RACE_SKIN[prev])) st.look.skin = ART.RACE_SKIN[st.race] || '#e0b48a'; rer(); });
     $('#mStd').onclick = () => { st.method = 'std'; st.pool = RR.STANDARD_ARRAY.slice(); autoAssign(st); rer(); };
     $('#mRoll').onclick = () => { st.method = 'roll'; st.pool = Array.from({ length: 6 }, () => { const r = Array.from({ length: 4 }, () => 1 + Math.floor(Math.random() * 6)).sort((a, b) => b - a); return r[0] + r[1] + r[2]; }).sort((a, b) => b - a); autoAssign(st); buzz(60); rer(); };
     const order = RR.ABILITIES;

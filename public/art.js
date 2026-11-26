@@ -230,25 +230,92 @@
     }
   }
   const CLASS_HAT = { Wizard: 'wizard', Fighter: 'helm', Paladin: 'paladin', Rogue: 'rogue', Ranger: 'hood', Warlock: 'warlock', Bard: 'feather', Cleric: 'circlet', Druid: 'antlers', Monk: 'headband' };
+  const RACE_SKIN = { Goliath: '#a8a196', Tabaxi: '#d9a35a', Aasimar: '#f3dcc8', Tortle: '#7da35a', Goblin: '#8ab04a', Kobold: '#c2603e', Orc: '#7f9a62', Lizardfolk: '#5f9a5a', Bugbear: '#a0703f', Kenku: '#3a3a48', Firbolg: '#9fb4c8', Triton: '#5aa6c8', Changeling: '#dcdce6' };
+  const RACE_PAL = {
+    Goliath: ['#a8a196', '#8f8a80', '#bdb3a3', '#7a7f86', '#c8b49a', '#9a8a7a'],
+    Tabaxi: ['#d9a35a', '#e8c88a', '#8a6a4a', '#3a3a3a', '#f0e6d8', '#c77a3a', '#9a9aa3'],
+    Aasimar: ['#f6e3d0', '#e0b48a', '#c68e5e', '#8d5a3a', '#e8d9f0', '#f3e6b0'],
+    Tortle: ['#7da35a', '#5f8a4a', '#9ab06a', '#6b8a7a', '#8a9a5a', '#4f7a6a'],
+    Goblin: ['#8ab04a', '#6f9a3a', '#a3b85a', '#c79a4a', '#7a8a6a', '#5f8a6a'],
+    Kobold: ['#c2603e', '#5a7ab0', '#4f8a3a', '#d9a62e', '#3a3a48', '#e8e0d0', '#8a4fa3'],
+    Orc: ['#7f9a62', '#6a8a7a', '#9a9a8a', '#5f7a4a', '#8aa36a', '#a89a8a'],
+    Lizardfolk: ['#5f9a5a', '#4f7a4a', '#8ab04a', '#5a7a8a', '#a3805a', '#3f6a5a'],
+    Bugbear: ['#a0703f', '#8a5a2b', '#c08a4a', '#6b4a2b', '#b5452c', '#9a9a8a'],
+    Kenku: ['#3a3a48', '#5a4a3a', '#2a2a2a', '#6b6b78', '#4a3a5a', '#7a5a3a'],
+    Firbolg: ['#9fb4c8', '#b7a2d6', '#a8b89a', '#c8a8a0', '#8aa8b0', '#d0c0a8'],
+    Triton: ['#5aa6c8', '#4a8ab0', '#6ac0b0', '#7a9ad0', '#3a7a9a', '#9ad0d8'],
+    Changeling: ['#dcdce6', '#c8c8d8', '#e8e0f0', '#d0d8e0', '#bfc8d0', '#e0d8d0']
+  };
+  const RACE_EYE = { Tiefling: '#ffd36b', Dragonborn: '#d9a62e', Tabaxi: '#8fd16a', Aasimar: '#ffe9a0', Goblin: '#ffb03a', Kobold: '#ffd36b', Lizardfolk: '#e8c84a', Orc: '#b5452c', Changeling: '#f3f3ff', Triton: '#1f5f7a', Bugbear: '#3a2a1a', Kenku: '#1a1a1a' };
+  const NOHAIR = new Set(['Dragonborn', 'Tortle', 'Kobold', 'Lizardfolk', 'Kenku']);
+  const SMALL = { Halfling: 0.9, Gnome: 0.9, Dwarf: 0.96, Goblin: 0.86, Kobold: 0.84 };
+  const BIGB = { 'Half-Orc': 2, Dragonborn: 2, Goliath: 3, Orc: 2, Bugbear: 2, Firbolg: 3, Tortle: 2, Lizardfolk: 1, Elf: 0, Tabaxi: 0, Kenku: 0, Goblin: 0, Kobold: 0 };
+  function raceSkin(look, race) { return race === 'Dragonborn' ? (look.scale || shade(look.cloak || '#5b6f86', 40)) : (look.skin || RACE_SKIN[race] || '#e0b48a'); }
+  // things drawn behind the head (ears that poke out, crests)
+  function raceBehind(race, skin, hy, look) {
+    const dk = shade(skin, -18);
+    switch (race) {
+      case 'Tabaxi': return P(`M33 ${hy - 8} L30 ${hy - 31} L46 ${hy - 17}Z M67 ${hy - 8} L70 ${hy - 31} L54 ${hy - 17}Z`, skin) + P(`M35 ${hy - 12} L33 ${hy - 25} L42 ${hy - 17}Z M65 ${hy - 12} L67 ${hy - 25} L58 ${hy - 17}Z`, '#e8a0a0');
+      case 'Goblin': return P(`M34 ${hy - 4} L8 ${hy - 14} L33 ${hy + 6}Z M66 ${hy - 4} L92 ${hy - 14} L67 ${hy + 6}Z`, skin) + P(`M30 ${hy - 3} L14 ${hy - 10} L31 ${hy + 3}Z M70 ${hy - 3} L86 ${hy - 10} L69 ${hy + 3}Z`, '#d98a8a', 'opacity=".55"');
+      case 'Orc': return P(`M33 ${hy - 2} L21 ${hy - 12} L34 ${hy + 6}Z M67 ${hy - 2} L79 ${hy - 12} L66 ${hy + 6}Z`, dk);
+      case 'Bugbear': return C(33, hy - 15, 7, skin) + C(67, hy - 15, 7, skin) + C(33, hy - 15, 3.6, dk) + C(67, hy - 15, 3.6, dk) + P(blob(50, hy + 2, 23, 18, 2.6, 4), shade(skin, -10));
+      case 'Firbolg': return P(`M33 ${hy - 4} Q16 ${hy - 6} 14 ${hy + 6} Q24 ${hy + 8} 34 ${hy + 4}Z M67 ${hy - 4} Q84 ${hy - 6} 86 ${hy + 6} Q76 ${hy + 8} 66 ${hy + 4}Z`, skin) + P(`M30 ${hy - 1} Q22 ${hy} 20 ${hy + 4} Q26 ${hy + 4} 31 ${hy + 2}Z M70 ${hy - 1} Q78 ${hy} 80 ${hy + 4} Q74 ${hy + 4} 69 ${hy + 2}Z`, '#e8a0a0', 'opacity=".6"');
+      case 'Triton': return P(`M33 ${hy - 4} L20 ${hy - 14} L24 ${hy - 2} L18 ${hy + 2} L33 ${hy + 6}Z M67 ${hy - 4} L80 ${hy - 14} L76 ${hy - 2} L82 ${hy + 2} L67 ${hy + 6}Z`, shade(skin, 20)) + P(`M44 ${hy - 17} L50 ${hy - 32} L56 ${hy - 17}Z`, shade(skin, 20));
+      case 'Kenku': return P(`M38 ${hy - 14} Q30 ${hy - 34} 42 ${hy - 30} Q44 ${hy - 22} 48 ${hy - 18}Z M48 ${hy - 16} Q50 ${hy - 38} 58 ${hy - 30} Q56 ${hy - 22} 56 ${hy - 16}Z`, shade(skin, 12)) + P(`M30 ${hy + 8} Q20 ${hy + 16} 26 ${hy + 24} Q32 ${hy + 16} 36 ${hy + 12}Z M70 ${hy + 8} Q80 ${hy + 16} 74 ${hy + 24} Q68 ${hy + 16} 64 ${hy + 12}Z`, skin);
+      case 'Lizardfolk': return P(`M36 ${hy - 14} L40 ${hy - 28} L46 ${hy - 18} L50 ${hy - 32} L54 ${hy - 18} L60 ${hy - 28} L64 ${hy - 14}Z`, look.hair && look.hair !== '#4a2c17' ? look.hair : '#d9a62e');
+      case 'Kobold': return P(`M38 ${hy - 14} Q32 ${hy - 26} 36 ${hy - 30} Q38 ${hy - 22} 44 ${hy - 17}Z M62 ${hy - 14} Q68 ${hy - 26} 64 ${hy - 30} Q62 ${hy - 22} 56 ${hy - 17}Z`, '#e8e0d0');
+    }
+    return '';
+  }
+  // things drawn over the face
+  function raceFront(race, skin, hy, look) {
+    const dk = shade(skin, -22), lt = shade(skin, 28);
+    switch (race) {
+      case 'Goliath': return L(`M37 ${hy - 10} l5 4 l-2 5 M63 ${hy - 10} l-5 4 l2 5 M48 ${hy - 15} l2 5 l2 -5`, shade(skin, -40), 1.4) + C(41, hy + 12, 1, shade(skin, -40)) + C(59, hy + 12, 1, shade(skin, -40));
+      case 'Tabaxi': return E(50, hy + 9, 9, 6, lt) + P(`M47 ${hy + 5} L53 ${hy + 5} L50 ${hy + 8}Z`, '#d97a8a') + L(`M41 ${hy + 9} l-12 -2 M41 ${hy + 11} l-12 2 M59 ${hy + 9} l12 -2 M59 ${hy + 11} l12 2`, '#2b1d12', .8) + L(`M46 ${hy - 16} l1 5 M50 ${hy - 17} v6 M54 ${hy - 16} l-1 5`, dk, 1.8) + L(`M32 ${hy} l5 1 M68 ${hy} l-5 1`, dk, 1.8) + E(43.4, hy + 1.6, .7, 1.8, '#1a1a1a') + E(57.4, hy + 1.6, .7, 1.8, '#1a1a1a');
+      case 'Aasimar': return C(43.4, hy + 1.6, 2.3, '#fff5c8', 'opacity=".6"') + C(57.4, hy + 1.6, 2.3, '#fff5c8', 'opacity=".6"') + P(`M50 ${hy - 14} l1.4 3 l3 .4 l-2.2 2 l.6 3 l-2.8 -1.5 l-2.8 1.5 l.6 -3 l-2.2 -2 l3 -.4Z`, '#ffe9a0');
+      case 'Tortle': return P(`M41 ${hy + 6} Q50 ${hy + 2} 59 ${hy + 6} Q56 ${hy + 15} 50 ${hy + 16} Q44 ${hy + 15} 41 ${hy + 6}Z`, lt) + L(`M43 ${hy + 9} Q50 ${hy + 12} 57 ${hy + 9}`, '#2b1d12', 1.8) + [[38, hy - 9], [46, hy - 14], [55, hy - 13], [62, hy - 8], [44, hy - 6], [57, hy - 5]].map(([x, y]) => C(x, y, 1.8, dk)).join('');
+      case 'Goblin': return E(50, hy + 5, 4.5, 3.6, dk) + P(`M44 ${hy + 11} l2 4 l2 -4Z M52 ${hy + 11} l2 4 l2 -4Z`, '#fff8ea');
+      case 'Orc': return P(`M40 ${hy + 13} l2.5 -9 l3.5 9Z M54 ${hy + 13} l3.5 -9 l2.5 9Z`, '#fff8ea') + L(`M38 ${hy - 6} L46 ${hy - 4} M54 ${hy - 4} L62 ${hy - 6}`, shade(skin, -45), 3) + E(50, hy + 5, 3.5, 2.6, dk);
+      case 'Bugbear': return E(50, hy + 7, 9, 7, lt) + E(50, hy + 4, 5, 3.6, '#2b1d12') + P(`M45 ${hy + 11} l1.5 4 l1.5 -4Z M52 ${hy + 11} l1.5 4 l1.5 -4Z`, '#fff8ea') + L(`M38 ${hy - 5} L46 ${hy - 3} M54 ${hy - 3} L62 ${hy - 5}`, shade(skin, -40), 2.6);
+      case 'Kenku': return P(`M43 ${hy + 3} L50 ${hy + 24} L57 ${hy + 3} Q50 ${hy} 43 ${hy + 3}Z`, '#9a8a6a') + L(`M45 ${hy + 9} L50 ${hy + 12} L55 ${hy + 9}`, '#5a4a3a', 1.2) + C(43.4, hy + .6, .8, '#fff') + C(57.4, hy + .6, .8, '#fff');
+      case 'Lizardfolk': case 'Kobold': { const k = race === 'Kobold'; return P(`M39 ${hy + 3} Q50 ${hy - 1} 61 ${hy + 3} L${k ? 58 : 60} ${hy + (k ? 15 : 17)} Q50 ${hy + (k ? 19 : 21)} ${k ? 42 : 40} ${hy + (k ? 15 : 17)}Z`, shade(skin, 6)) + C(46, hy + 7, 1.2, '#1a1a1a') + C(54, hy + 7, 1.2, '#1a1a1a') + L(`M42 ${hy + 13} Q50 ${hy + 16} 58 ${hy + 13}`, '#2b1d12', 1.6) + teethRow(43, hy + 13, k ? 5 : 6, 2.4) + [[36, hy - 6], [42, hy - 12], [50, hy - 14], [58, hy - 12], [64, hy - 6]].map(([x, y]) => C(x, y, 1.6, dk)).join(''); }
+      case 'Firbolg': return E(50, hy + 6, 4.6, 4, '#d98a8a') + C(48.4, hy + 6.6, .9, '#8a4a4a') + C(51.6, hy + 6.6, .9, '#8a4a4a');
+      case 'Triton': return [[36, hy + 2], [38, hy + 6], [64, hy + 2], [62, hy + 6], [34, hy - 2], [66, hy - 2]].map(([x, y]) => C(x, y, 1.2, shade(skin, -25))).join('');
+      case 'Changeling': return L(`M40 ${hy - 13} Q50 ${hy - 16} 60 ${hy - 13}`, shade(skin, -12), 1);
+    }
+    return '';
+  }
+  function raceBack(race, skin, look) {
+    switch (race) {
+      case 'Tortle': { const sh = look.shell || shade(skin, -38); return P(blob(50, 80, 38, 26, 1.2, 7), sh) + L('M30 70 L38 78 L30 90 M70 70 L62 78 L70 90 M38 78 L62 78 M50 62 L50 78', shade(sh, -25), 2) + P(blob(50, 80, 38, 26, 1.2, 7), 'none', `fill="none" stroke="${shade(sh, 25)}" stroke-width="2"`); }
+      case 'Tabaxi': return L('M70 96 Q92 92 90 70 Q88 58 80 60', skin, 6) + L('M88 66 Q86 60 80 60', shade(skin, -25), 6);
+      case 'Kobold': case 'Lizardfolk': return P('M64 92 Q90 96 96 76 Q90 84 66 84Z', skin);
+      case 'Kenku': return P('M34 98 L24 80 L38 92 L36 76 L46 94Z', shade(skin, -10));
+    }
+    return '';
+  }
   function heroHead(look, cls, race, hy) {
-    const skin0 = look.skin || '#e0b48a'; const hair = look.hair || '#4a2c17'; const cloak = look.cloak || '#5b6f86';
+    const skin0 = look.skin || RACE_SKIN[race] || '#e0b48a'; const hair = look.hair || '#4a2c17'; const cloak = look.cloak || '#5b6f86';
     const skin = race === 'Dragonborn' ? (look.scale || shade(cloak, 40)) : skin0; const hr = (race === 'Halfling' || race === 'Gnome') ? 18 : 19;
-    let s = '';
+    let s = raceBehind(race, skin, hy, look);
     if (race === 'Elf' || race === 'Half-Elf') { const l = race === 'Elf' ? 15 : 9; s += P(`M33 ${hy - 2} L${33 - l} ${hy - 8} L34 ${hy + 6}Z`, shade(skin, -10)) + P(`M67 ${hy - 2} L${67 + l} ${hy - 8} L66 ${hy + 6}Z`, shade(skin, -10)); }
     if (race === 'Gnome' || race === 'Halfling' || race === 'Half-Orc') s += C(31, hy + 2, 5, shade(skin, -10)) + C(69, hy + 2, 5, shade(skin, -10));
     if (race === 'Half-Orc') s += P(`M28 ${hy} l-6 -6 l6 1Z M72 ${hy} l6 -6 l-6 1Z`, shade(skin, -10));
     const hg0 = look.headgear && look.headgear !== 'auto' ? look.headgear : (CLASS_HAT[cls] || 'none');
     const hatted = !['none', 'circlet', 'headband', 'antlers', 'crown', 'bandana', 'straw', 'tricorn', 'souwester', 'chef'].includes(hg0);
-    if (look.hairStyle === 1 || look.hairStyle === 7 || look.hairStyle === 6) { if (!hatted && race !== 'Dragonborn') s += hairFor(look.hairStyle, hair, hy); }
-    s += face(skin, { y: hy, r: hr, hair, eye: look.eyes || (race === 'Tiefling' ? '#ffd36b' : race === 'Dragonborn' ? '#d9a62e' : undefined), cheeks: race !== 'Dragonborn', mark: look.mark, brows: look.brows });
+    if (look.hairStyle === 1 || look.hairStyle === 7 || look.hairStyle === 6) { if (!hatted && !NOHAIR.has(race)) s += hairFor(look.hairStyle, hair, hy); }
+    s += face(skin, { y: hy, r: hr, hair, eye: look.eyes || RACE_EYE[race], cheeks: !['Dragonborn', 'Kobold', 'Lizardfolk', 'Kenku', 'Tortle'].includes(race), mark: look.mark, brows: look.brows });
     if (race === 'Dragonborn') s += P(`M38 ${hy + 6} Q50 ${hy + 20} 62 ${hy + 6} Q50 ${hy + 12} 38 ${hy + 6}Z`, shade(skin, -18)) + P(`M36 ${hy - 14} L30 ${hy - 26} L42 ${hy - 17}Z`, '#e8e0d0') + P(`M64 ${hy - 14} L70 ${hy - 26} L58 ${hy - 17}Z`, '#e8e0d0') + C(44, hy - 8, 1.6, shade(skin, -25)) + C(56, hy - 8, 1.6, shade(skin, -25)) + C(50, hy - 12, 1.6, shade(skin, -25));
     if (race === 'Gnome') s += E(50, hy + 5, 4, 3.5, shade(skin, -18));
+    s += raceFront(race, skin, hy, look);
     if (race === 'Half-Orc') s += P(`M42 ${hy + 10} l2 -5 l2 5Z M54 ${hy + 10} l2 -5 l2 5Z`, '#fff8ea');
     const beard = look.beard != null ? look.beard : (race === 'Dwarf' ? 3 : 0);
-    if (race !== 'Dragonborn') s += beardFor(beard, hair, hy);
-    if (!hatted && race !== 'Dragonborn' && ![1, 6, 7].includes(look.hairStyle)) s += hairFor(look.hairStyle, hair, hy);
+    if (!NOHAIR.has(race)) s += beardFor(beard, hair, hy);
+    if (!hatted && !NOHAIR.has(race) && ![1, 6, 7].includes(look.hairStyle)) s += hairFor(look.hairStyle, hair, hy);
     if (race === 'Tiefling') s += P(`M35 ${hy - 12} Q22 ${hy - 22} 28 ${hy - 34} Q30 ${hy - 22} 40 ${hy - 16}Z`, look.horns || '#5a3a6b') + P(`M65 ${hy - 12} Q78 ${hy - 22} 72 ${hy - 34} Q70 ${hy - 22} 60 ${hy - 16}Z`, look.horns || '#5a3a6b');
     s += headgearFor(hg0, hy, look, cls);
+    if (race === 'Aasimar') s += E(50, hy - 25, 15, 4, 'none', 'fill="none" stroke="#ffe08a" stroke-width="2.6" opacity=".9"');
     if (look.earring) s += C(32, hy + 9, 1.8, GOLD);
     return s;
   }
@@ -275,17 +342,17 @@
   const CLASS_GEAR = { Barbarian: ['greataxe'], Bard: ['rapier'], Cleric: ['mace', 'shield_sun'], Druid: ['scimitar', 'shield_bark'], Fighter: ['longsword', 'shield_heater'], Monk: ['unarmed'], Paladin: ['longsword', 'shield_kite'], Ranger: ['longbow'], Rogue: ['shortsword', 'dagger'], Sorcerer: ['dagger', 'flame'], Warlock: ['dagger', 'orb'], Wizard: ['staff'] };
   function heroSVG(look, cls, race, size, opts = {}) {
     look = look || {}; const cloak = look.cloak || '#5b6f86';
-    const small = (race === 'Halfling' || race === 'Gnome') ? 0.9 : race === 'Dwarf' ? 0.96 : null;
-    const build = look.build != null ? look.build : (race === 'Half-Orc' || race === 'Dragonborn' || cls === 'Barbarian' ? 2 : race === 'Elf' ? 0 : 1);
+    const small = SMALL[race] || null;
+    const build = look.build != null ? look.build : (BIGB[race] != null ? Math.max(BIGB[race], cls === 'Barbarian' ? 2 : 0) : cls === 'Barbarian' ? 2 : 1);
     const sx = [0.88, 1, 1.12, 1.25][build];
     let main = opts.main !== undefined ? weaponKey(opts.main) : (opts.gear === false ? null : (CLASS_GEAR[cls] || [])[0]);
     if (cls === 'Wizard' && (main === 'quarterstaff' || main === 'dagger') && !opts.plainStaff) main = main === 'quarterstaff' ? 'staff' : main;
     let off = opts.off !== undefined ? opts.off : (opts.gear === false ? null : (CLASS_GEAR[cls] || [])[1]);
     if (off === 'shield') off = { Cleric: 'shield_sun', Paladin: 'shield_kite', Druid: 'shield_bark', Fighter: 'shield_heater' }[cls] || 'shield_round';
     off = weaponKey(off) || off;
-    const skin = race === 'Dragonborn' ? (look.scale || shade(cloak, 40)) : (look.skin || '#e0b48a');
+    const skin = raceSkin(look, race);
     const hy = 44;
-    return wrap(rig({ skin, sleeve: cloak, build, head: heroHead(look, cls, race, hy), front: '', main, off, plus: opts.plus, small, handKind: look.gloves ? 'glove' : null, offColor: look.shieldColor,
+    return wrap(rig({ skin, sleeve: cloak, build, back: raceBack(race, skin, look), head: heroHead(look, cls, race, hy), front: '', main, off, plus: opts.plus, small, handKind: look.gloves ? 'glove' : null, offColor: look.shieldColor,
       torso: P(`M${50 - 36 * sx} 100 Q${50 - 35 * sx} 70 ${50 - 16 * sx} 64 Q50 70 ${50 + 16 * sx} 64 Q${50 + 35 * sx} 70 ${50 + 36 * sx} 100Z`, cloak) + outfit(cls, look, sx) }), size);
   }
 
@@ -730,5 +797,5 @@
   const memos = [];
   const memo = (fn) => { const m = new Map(); memos.push(m); return (...a) => { const k = JSON.stringify(a); let v = m.get(k); if (!v) { v = fn(...a); m.set(k, v); if (m.size > 800) m.clear(); } return v; }; };
   function setStyle(s) { Object.assign(STYLE, s || {}); memos.forEach(m => m.clear()); }
-  root.ART = { heroSVG: memo(heroSVG), npcSVG: memo(npcSVG), monsterSVG: memo(monsterSVG), propSVG: memo(propSVG), toImg, shade, setStyle, STYLE, WEAPONS: W, weaponKey, HAIR_STYLES, BEARDS, HEADGEAR, ROLES: Object.keys(ROLES), roleGuess: ROLE_GUESS, MARKS: ['none', 'freckles', 'scar', 'eyepatch', 'warpaint', 'glasses', 'tattoo'] };
+  root.ART = { heroSVG: memo(heroSVG), npcSVG: memo(npcSVG), monsterSVG: memo(monsterSVG), propSVG: memo(propSVG), toImg, shade, setStyle, STYLE, WEAPONS: W, weaponKey, HAIR_STYLES, BEARDS, HEADGEAR, ROLES: Object.keys(ROLES), RACE_SKIN, RACE_PAL, BIGB, roleGuess: ROLE_GUESS, MARKS: ['none', 'freckles', 'scar', 'eyepatch', 'warpaint', 'glasses', 'tattoo'] };
 })(window);

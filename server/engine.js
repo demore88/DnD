@@ -74,23 +74,24 @@ function buildCharacter(owner, input) {
   };
   if (cls === 'Rogue') ch.inventory.push({ k: 'thieves_tools', n: "Thieves' Tools", q: 1 });
   if (cls === 'Cleric' || cls === 'Paladin') ch.inventory.push({ k: 'holy_water', n: 'Holy Water', q: 1 });
-  if (R.RACES[race].feature) ch.features.push(R.RACES[race].feature);
+  raceFeats(race).forEach(f => ch.features.push(f));
   refreshClass(ch); ch.hp = ch.maxHp;
   return ch;
 }
 function cleanLook(l) {
   const out = {}; if (!l || typeof l !== 'object') return out;
   const col = (v) => typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v : undefined;
-  ['skin', 'hair', 'cloak', 'trim', 'eyes', 'cape', 'scale', 'horns', 'shieldColor'].forEach(k => { const v = col(l[k]); if (v) out[k] = v; else if (l[k] === null) out[k] = null; });
+  ['skin', 'hair', 'cloak', 'trim', 'eyes', 'cape', 'scale', 'horns', 'shieldColor', 'shell'].forEach(k => { const v = col(l[k]); if (v) out[k] = v; else if (l[k] === null) out[k] = null; });
   ['hairStyle', 'beard', 'brows', 'build'].forEach(k => { const v = parseInt(l[k], 10); if (!isNaN(v) && v >= 0 && v < 12) out[k] = v; });
   ['mark', 'headgear'].forEach(k => { if (typeof l[k] === 'string' && /^[a-z]{1,12}$/.test(l[k])) out[k] = l[k]; });
   ['gloves', 'earring'].forEach(k => { if (l[k] != null) out[k] = !!l[k]; });
   return out;
 }
+function raceFeats(race) { const r = R.RACES[race] || {}; return [].concat(r.feature || [], r.features || []); }
 function refreshClass(ch) {
   const C = R.CLASSES[ch.class];
-  const feats = R.featuresAt(ch.class, ch.level); const race = R.RACES[ch.race].feature;
-  ch.features = [...new Set([...feats, ...(race ? [race] : [])])];
+  const feats = R.featuresAt(ch.class, ch.level);
+  ch.features = [...new Set([...feats, ...raceFeats(ch.race)])];
   const st = R.slotTable(ch.class, ch.level); const old = ch.slots || [];
   ch.slots = st.map((n, i) => ({ max: n, used: Math.min(old[i]?.used || 0, n) }));
   ch.spells = R.classSpells(ch.class, ch.level);
@@ -124,7 +125,8 @@ function charOfToken(c, t) { return t && t.kind === 'pc' ? c.characters[t.charId
 function tileAt(s, x, y) { if (x < 0 || y < 0 || x >= s.w || y >= s.h) return '#'; return s.tiles[y][x]; }
 function setTile(s, x, y, ch) { const row = s.tiles[y]; s.tiles[y] = row.slice(0, x) + ch + row.slice(x + 1); }
 function occupied(s, x, y, ignoreId) { return s.tokens.some(t => t.id !== ignoreId && !t.gone && t.x === x && t.y === y); }
-function walkable(s, x, y) { return !MG.BLOCK.has(tileAt(s, x, y)); }
+function walkable(s, x, y, swim) { const ch = tileAt(s, x, y); return swim && ch === '~' ? true : !MG.BLOCK.has(ch); }
+function canSwim(c, t) { if (!t || t.kind !== 'pc') return false; const ch = c.characters[t.charId]; return !!(ch && R.RACES[ch.race]?.swim); }
 function freeSpotNear(s, x, y, ignoreId, maxR = 8) {
   for (let r = 0; r <= maxR; r++) { const cands = []; for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) { if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue; const nx = x + dx, ny = y + dy; if (walkable(s, nx, ny) && !occupied(s, nx, ny, ignoreId) && !s.pois.some(p => p.x === nx && p.y === ny && p.type !== 'trap')) cands.push([nx, ny]); } if (cands.length) return pick(cands); }
   return [x, y];
@@ -325,7 +327,7 @@ function hpOf(c, t) { const ch = charOfToken(c, t); return ch ? ch.hp : t.hp; }
 function maxHpOf(c, t) { const ch = charOfToken(c, t); return ch ? ch.maxHp : t.maxHp; }
 function acOf(c, t) {
   const ch = charOfToken(c, t); let ac = ch ? R.computeAC(ch) : t.ac;
-  if (hasCond(c, t, 'shielded')) ac += 5; if (hasCond(c, t, 'shield_of_faith')) ac += 2;
+  if (hasCond(c, t, 'shielded')) ac += 5; if (hasCond(c, t, 'shield_of_faith')) ac += 2; if (hasCond(c, t, 'shelled')) ac += 4;
   return ac;
 }
 function isAlive(c, t) { if (!t || t.gone) return false; const ch = charOfToken(c, t); return ch ? !ch.dead : t.hp > 0; }
@@ -340,6 +342,8 @@ function damage(c, t, amount, dtype, opts = {}) {
   if (ch) {
     if (hasCond(c, t, 'raging') && ['bludgeoning', 'piercing', 'slashing'].includes(dtype)) dmg = Math.floor(dmg / 2);
     if (ch.features.includes('uncanny_dodge') && opts.attack && !c.turn['ud_' + ch.id + '_' + c.turn.round]) { c.turn['ud_' + ch.id + '_' + c.turn.round] = 1; dmg = Math.floor(dmg / 2); }
+    if ((R.RACES[ch.race]?.resist || []).includes(dtype)) dmg = Math.floor(dmg / 2);
+    if (ch.features.includes('stones_endurance') && opts.attack && !ch.uses.stones_endurance && ch.hp > 0 && (dmg >= 8 || dmg >= ch.hp)) { ch.uses.stones_endurance = 1; const red = rollDice('1d12').total + R.mod(ch.scores.con); dmg = Math.max(0, dmg - red); addLog(c, 'system', `🪨 ${ch.name} braces like a mountain — Stone's Endurance blocks ${red} damage!`); }
     if (ch.temp) { const a = Math.min(ch.temp, dmg); ch.temp -= a; dmg -= a; }
     if (ch.hp <= 0) { if (!ch.dead) { ch.deathFails += opts.crit ? 2 : 1; if (ch.deathFails >= 3) die(c, t); } return amount; }
     ch.hp -= dmg;
@@ -487,15 +491,15 @@ function pathTo(c, s, t, tx, ty, budget, opts = {}) {
   if (tx < 0 || ty < 0 || tx >= s.w || ty >= s.h) return null;
   const W = s.w; const dist = new Map(); const prev = new Map(); const key = (x, y) => y * W + x;
   const enemyAt = (x, y) => s.tokens.some(o => o.id !== t.id && !o.gone && o.x === x && o.y === y && (t.kind === 'pc' ? (o.kind === 'monster' && !o.dormant) || o.kind === 'npc' : o.kind === 'pc' || o.kind === 'npc'));
-  const anyAt = (x, y) => occupied(s, x, y, t.id);
+  const anyAt = (x, y) => occupied(s, x, y, t.id); const sw = canSwim(c, t);
   const start = key(t.x, t.y); dist.set(start, 0); const q = [[0, t.x, t.y]];
   while (q.length) {
     q.sort((a, b) => a[0] - b[0]); const [d, x, y] = q.shift(); if (d > (dist.get(key(x, y)) ?? 1e9)) continue;
     if (x === tx && y === ty) break;
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
       if (!dx && !dy) continue; const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= s.w || ny >= s.h) continue;
-      if (!walkable(s, nx, ny) || enemyAt(nx, ny)) continue;
-      if (dx && dy && (!walkable(s, x + dx, y) || !walkable(s, x, y + dy))) continue; // no corner cutting
+      if (!walkable(s, nx, ny, sw) || enemyAt(nx, ny)) continue;
+      if (dx && dy && (!walkable(s, x + dx, y, sw) || !walkable(s, x, y + dy, sw))) continue; // no corner cutting
       if (t.kind === 'pc' && s.seen[key(nx, ny)] !== '1' && !(nx === tx && ny === ty && opts.allowUnseen)) continue;
       if (t.kind === 'pc' && !opts.intoTrap && s.pois.some(p => p.type === 'trap' && !p.hidden && !p.disarmed && p.x === nx && p.y === ny) && !(nx === tx && ny === ty)) continue;
       const step = MG.DIFFICULT.has(tileAt(s, nx, ny)) ? 2 : 1; const nd = d + step; if (budget != null && nd > budget) continue;
@@ -543,7 +547,9 @@ function attackRollMods(c, att, tgt, ranged) {
   if (['restrained', 'paralyzed', 'asleep', 'outlined', 'lit'].some(k => hasCond(c, tgt, k))) a++;
   if (hasCond(c, tgt, 'reckless')) a++;
   if (hasCond(c, tgt, 'dodging')) d++;
+  if (att.kind === 'monster' && hasCond(c, tgt, 'hidden')) { d++; notes.push('can\'t see them'); }
   if (ranged) { const s = scene(c); const foes = s.tokens.filter(o => !o.gone && o.id !== att.id && cheb(o, att) <= 1 && (att.kind === 'pc' ? o.kind === 'monster' && !o.dormant && o.hp > 0 && !isHelpless(c, o) : o.kind === 'pc' && isUp(c, o))); if (foes.length) { d++; notes.push('enemy adjacent'); } }
+  if (att.kind === 'pc') { const ach = charOfToken(c, att); if (ach && ach.features.includes('pack_tactics_pc') && scene(c).tokens.some(o => o.kind === 'pc' && o.id !== att.id && isUp(c, o) && cheb(o, tgt) <= 1)) { a++; notes.push('pack tactics'); } }
   if (att.kind === 'monster') { const traits = R.BESTIARY[att.mkey]?.traits || []; if (traits.includes('pack_tactics') && scene(c).tokens.some(o => o.kind === 'monster' && o.id !== att.id && !o.gone && !o.dormant && cheb(o, tgt) <= 1)) { a++; notes.push('pack tactics'); } }
   return { adv: advOf(a, d), notes };
 }
@@ -569,6 +575,8 @@ function pcAttack(c, ch, t, tgt, w, opts = {}) {
     const base = rollDice(weaponDice(ch, w), crit); dmg = base.total + (opts.offhand && m > 0 ? 0 : m) + (w.plus || 0); parts.push(`${base.total}${fmtMod((opts.offhand && m > 0 ? 0 : m) + (w.plus || 0))}`);
     if (crit && ch.race === 'Half-Orc' && !ranged) { const e = rollDice(weaponDice(ch, w)).total; dmg += e; parts.push(`${e} savage`); }
     if (hasCond(c, t, 'raging') && !ranged && ab === 'str') { dmg += 2; parts.push('2 rage'); }
+    if (ch.features.includes('fury_small') && !ch.uses.fury_small) { ch.uses.fury_small = 1; dmg += ch.level; parts.push(`${ch.level} fury of the small`); }
+    if (ch.features.includes('surprise_attack') && c.turn.mode === 'combat' && c.turn.round === 1 && !c.turn.res?.surprise) { if (c.turn.res) c.turn.res.surprise = true; const e = rollDice('2d6', crit).total; dmg += e; parts.push(`${e} surprise attack`); }
     if (ch.equip.armor == null && false) { }
     const hx = condsOf(c, tgt).find(x => (x.k === 'hexed' || x.k === 'marked') && x.src === t.id); if (hx) { const e = rollDice('1d6', crit).total; dmg += e; parts.push(`${e} ${hx.k === 'hexed' ? 'hex' : 'mark'}`); }
     if (w.extra && (!w.extra.vs || (w.extra.vs === 'undead' && isUndead(tgt)))) { const e = rollDice(w.extra.dice, crit).total; dmg += e; parts.push(`${e} ${w.extra.type}`); }
@@ -664,7 +672,7 @@ function monsterTurn(c, m) {
   }
   // choose a target: reachable, prefer wounded/low AC; bosses prefer casters
   const melee = (M.att || []).filter(a => (a.range || 1) <= 1); const rangedAtt = (M.att || []).filter(a => (a.range || 1) > 1);
-  const score = (p) => cheb(p, m) * 2 + hpOf(c, p) / 4 + acOf(c, p) / 3 - (m.boss && ['Wizard', 'Sorcerer', 'Cleric'].includes(charOfToken(c, p)?.class) ? 3 : 0);
+  const score = (p) => cheb(p, m) * 2 + hpOf(c, p) / 4 + acOf(c, p) / 3 + (hasCond(c, p, 'hidden') ? 12 : 0) + (canSwim(c, p) && tileAt(scene(c), p.x, p.y) === '~' ? 8 : 0) - (m.boss && ['Wizard', 'Sorcerer', 'Cleric'].includes(charOfToken(c, p)?.class) ? 3 : 0);
   const ordered = pcs.slice().sort((a, b) => score(a) - score(b));
   let tgt = ordered[0];
   // ranged monsters keep distance if they can
@@ -827,7 +835,10 @@ function lootChest(c, ch, poi) {
 }
 function rollCheck(c, ch, t, skillOrAb, label, dc, advIn) {
   const isSkill = !!R.SKILLS[skillOrAb]; const m = isSkill ? skillMod(ch, skillOrAb) : R.mod(ch.scores[skillOrAb]);
-  let a = 0, d = 0; if (advIn === 'adv') a++; if (advIn === 'dis') d++; if (t && ['poisoned', 'frightened'].some(k => hasCond(c, t, k))) d++; if (t && hasCond(c, t, 'helped')) { a++; removeCond(c, t, 'helped'); }
+  let a = 0, d = 0; if (advIn === 'adv') a++; if (advIn === 'dis') d++;
+  if (isSkill && ch.features.includes('kenku_recall') && ch.skills.includes(skillOrAb)) a++;
+  if (isSkill && ch.features.includes('shapechanger') && ['deception', 'persuasion', 'performance'].includes(skillOrAb)) a++;
+  if (t && ['poisoned', 'frightened'].some(k => hasCond(c, t, k))) d++; if (t && hasCond(c, t, 'helped')) { a++; removeCond(c, t, 'helped'); }
   const r = d20(advOf(a, d), ch.race === 'Halfling'); let bonus = 0; let btxt = '';
   const insp = t && condsOf(c, t).find(x => x.k === 'inspired'); if (insp) { const b = rollDice('1d6').total; bonus += b; btxt = ` +${b}🎵`; removeCond(c, t, 'inspired'); }
   const total = r.pick + m + bonus; const ok = dc ? total >= dc : null;
@@ -1025,7 +1036,7 @@ function unequip(c, ch, what, i) {
   ch.ac = R.computeAC(ch); return { ok: true };
 }
 
-module.exports = {
+module.exports = { canSwim, raceFeats,
   cleanLook, setHooks, uid, now, rollDice, d20, addLog, newCampaign, buildCharacter, refreshClass, makeWeapon, featureUses, attacksPerAction, spellAtk, spellDC, skillMod, saveMod, passivePerception,
   invFind, invAdd, invRemove, partyHas, scene, pcTokens, tokenOfChar, charOfToken, tileAt, walkable, occupied, freeSpotNear, buildScene, enterScene, updateVision, wakeEncounter,
   event, offerQuest, completeQuest, giveXp, condsOf, hasCond, addCond, removeCond, isHelpless, hpOf, acOf, isAlive, isUp, damage, heal, killMonster, monsterToken,

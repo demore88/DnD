@@ -13,13 +13,29 @@
   const RACES = {
     Human: { bonus: { str: 1, dex: 1, con: 1, int: 1, wis: 1, cha: 1 }, speed: 30, traits: ['Versatile: +1 to every ability'], blurb: 'Adaptable and ambitious.' },
     Elf: { bonus: { dex: 2, int: 1 }, speed: 30, dark: true, traits: ['Darkvision', 'Keen Senses (Perception)', 'Fey Ancestry: can\'t be magically put to sleep'], skills: ['perception'], blurb: 'Graceful, keen-eyed, long-lived.' },
-    Dwarf: { bonus: { con: 2, wis: 1 }, speed: 25, dark: true, traits: ['Darkvision', 'Dwarven Resilience: advantage vs poison', 'Stonecunning'], blurb: 'Tough as the mountains.' },
+    Dwarf: { bonus: { con: 2, wis: 1 }, speed: 25, dark: true, resist: ['poison'], traits: ['Darkvision', 'Dwarven Resilience: resist poison', 'Stonecunning'], blurb: 'Tough as the mountains.' },
     Halfling: { bonus: { dex: 2, cha: 1 }, speed: 25, traits: ['Lucky: reroll natural 1s', 'Brave: advantage vs fear', 'Nimble'], blurb: 'Small, quick, and lucky.' },
-    Dragonborn: { bonus: { str: 2, cha: 1 }, speed: 30, traits: ['Breath Weapon (2d6, 1/rest)', 'Damage Resistance'], feature: 'breath_weapon', blurb: 'Proud draconic warriors.' },
+    Dragonborn: { bonus: { str: 2, cha: 1 }, speed: 30, resist: ['fire'], traits: ['Breath Weapon (2d6, 1/rest)', 'Draconic Resistance (fire)'], feature: 'breath_weapon', blurb: 'Proud draconic warriors.' },
     Gnome: { bonus: { int: 2, con: 1 }, speed: 25, dark: true, traits: ['Darkvision', 'Gnome Cunning: advantage on magic saves'], blurb: 'Clever tinkerers and illusionists.' },
     'Half-Elf': { bonus: { cha: 2, dex: 1, con: 1 }, speed: 30, dark: true, traits: ['Darkvision', 'Fey Ancestry', 'Skill Versatility'], blurb: 'Between two worlds.' },
     'Half-Orc': { bonus: { str: 2, con: 1 }, speed: 30, dark: true, traits: ['Darkvision', 'Relentless Endurance: drop to 1 HP instead of 0 (1/rest)', 'Savage Attacks: bigger crits'], skills: ['intimidation'], blurb: 'Fierce and unbreakable.' },
-    Tiefling: { bonus: { cha: 2, int: 1 }, speed: 30, dark: true, traits: ['Darkvision', 'Hellish Resistance (fire)', 'Infernal Legacy'], blurb: 'Touched by fiendish blood.' }
+    Tiefling: { bonus: { cha: 2, int: 1 }, speed: 30, dark: true, resist: ['fire'], traits: ['Darkvision', 'Hellish Resistance (fire)', 'Infernal Legacy'], blurb: 'Touched by fiendish blood.' },
+    // ---- fan favorites ----
+    Goliath: { bonus: { str: 2, con: 1 }, speed: 30, big: true, resist: ['cold'], features: ['stones_endurance'], skills: ['athletics'], traits: ["Stone's Endurance: shrug off a big hit (1/rest)", 'Powerful Build', 'Mountain Born: resist cold'], blurb: 'Towering mountain folk who never back down from a challenge.' },
+    Tabaxi: { bonus: { dex: 2, cha: 1 }, speed: 30, dark: true, features: ['feline_agility'], skills: ['perception', 'stealth'], traits: ['Darkvision', 'Feline Agility: double your speed for a turn', "Cat's Claws", 'Cat Senses (Perception, Stealth)'], blurb: 'Curious cat folk who chase every secret.' },
+    Aasimar: { bonus: { cha: 2, wis: 1 }, speed: 30, dark: true, resist: ['radiant', 'necrotic'], features: ['healing_hands'], traits: ['Darkvision', 'Healing Hands: heal an ally by touch (1/day)', 'Celestial Resistance (radiant, necrotic)'], blurb: 'Mortals touched by the light of the heavens.' },
+    Tortle: { bonus: { str: 2, wis: 1 }, speed: 30, natArmor: { flat: 17 }, features: ['shell_defense'], skills: ['survival'], traits: ['Natural Armor: AC 17', 'Shell Defense: duck in for +4 AC', 'Hold Breath'], blurb: 'Patient turtle wanderers who carry home on their backs.' },
+    // ---- monster races ----
+    Goblin: { bonus: { dex: 2, con: 1 }, speed: 30, dark: true, small: true, features: ['fury_small', 'nimble_escape'], skills: ['stealth'], traits: ['Darkvision', 'Fury of the Small: +level damage on a hit (1/rest)', 'Nimble Escape: Dash or Hide as a bonus action'], blurb: 'Small, sneaky, and much tougher than they look.' },
+    Kobold: { bonus: { dex: 2, int: 1 }, speed: 30, dark: true, small: true, features: ['pack_tactics_pc'], traits: ['Darkvision', 'Pack Tactics: advantage when an ally is next to your target', 'Draconic Ancestry'], blurb: 'Tiny dragon-folk who win by sticking together.' },
+    Orc: { bonus: { str: 2, con: 1 }, speed: 30, dark: true, big: true, features: ['aggressive'], skills: ['intimidation'], traits: ['Darkvision', 'Aggressive: Dash as a bonus action', 'Powerful Build'], blurb: 'Fierce, loyal, and always first into the fight.' },
+    Lizardfolk: { bonus: { con: 2, wis: 1 }, speed: 30, natArmor: { base: 13 }, resist: [], features: ['hungry_jaws'], skills: ['survival'], traits: ['Natural Armor: 13 + Dex', 'Hungry Jaws: bonus-action bite that gives temp HP', 'Hold Breath'], blurb: 'Cold-blooded swamp hunters with a nasty bite.' },
+    Bugbear: { bonus: { str: 2, dex: 1 }, speed: 30, dark: true, big: true, features: ['long_limbed', 'surprise_attack'], skills: ['stealth'], traits: ['Darkvision', 'Long-Limbed: melee reach of 2 squares', 'Surprise Attack: +2d6 on round 1', 'Sneaky'], blurb: 'Huge, hairy, and surprisingly quiet.' },
+    // ---- weird & wonderful ----
+    Kenku: { bonus: { dex: 2, wis: 1 }, speed: 30, features: ['kenku_recall'], skills: ['stealth', 'deception'], traits: ['Kenku Recall: advantage on skills you know', 'Mimicry: copy any sound you hear'], blurb: 'Crow folk who can imitate any voice.' },
+    Firbolg: { bonus: { wis: 2, str: 1 }, speed: 30, big: true, features: ['hidden_step'], skills: ['nature'], traits: ['Hidden Step: turn invisible as a bonus action (1/rest)', 'Speech of Beast and Leaf', 'Powerful Build'], blurb: 'Gentle forest giants who guard the wild places.' },
+    Triton: { bonus: { str: 1, con: 1, cha: 1 }, speed: 30, dark: true, swim: true, resist: ['cold'], skills: ['athletics'], traits: ['Darkvision', 'Amphibious: swim through water', 'Guardian of the Depths: resist cold'], blurb: 'Proud ocean guardians from the deep.' },
+    Changeling: { bonus: { cha: 2, dex: 1 }, speed: 30, features: ['shapechanger'], skills: ['deception', 'insight'], traits: ['Shapechanger: change your look anytime', 'Changeling Instincts: advantage on Deception, Persuasion and Performance'], blurb: 'Shapeshifters who can wear any face.' }
   };
 
   // ---------------- weapons & armor ----------------
@@ -116,6 +132,20 @@
     cunning_action: { name: 'Cunning Action', kind: 'passive', desc: 'Dash or Hide as a bonus action.' },
     uncanny_dodge: { name: 'Uncanny Dodge', kind: 'passive', desc: 'Halve the first hit you take each round.' },
     arcane_recovery: { name: 'Arcane Recovery', kind: 'passive', desc: 'Regain a spell slot on a short rest.' },
+    stones_endurance: { name: "Stone's Endurance", kind: 'passive', uses: () => 1, rest: 'short', desc: 'The first big hit you take each rest is reduced by 1d12 + Con.' },
+    feline_agility: { name: 'Feline Agility', kind: 'bonus', uses: () => 1, rest: 'short', desc: 'Double your movement this turn.' },
+    healing_hands: { name: 'Healing Hands', kind: 'action', uses: () => 1, rest: 'long', target: 'ally', range: 1, desc: 'Touch an ally to heal 1d4 per level.' },
+    shell_defense: { name: 'Shell Defense', kind: 'action', desc: 'Pull into your shell: +4 AC until your next turn.' },
+    fury_small: { name: 'Fury of the Small', kind: 'passive', uses: () => 1, rest: 'short', desc: 'Your first hit each rest deals extra damage equal to your level.' },
+    nimble_escape: { name: 'Nimble Escape', kind: 'passive', desc: 'Dash or Hide as a bonus action.' },
+    pack_tactics_pc: { name: 'Pack Tactics', kind: 'passive', desc: 'Advantage on attacks when an ally is next to your target.' },
+    aggressive: { name: 'Aggressive', kind: 'passive', desc: 'Dash as a bonus action.' },
+    hungry_jaws: { name: 'Hungry Jaws', kind: 'bonus', uses: () => 1, rest: 'short', target: 'enemy', range: 1, desc: 'Bite an adjacent enemy (1d6 + Str) and gain temp HP.' },
+    long_limbed: { name: 'Long-Limbed', kind: 'passive', desc: 'Your melee attacks reach 2 squares.' },
+    surprise_attack: { name: 'Surprise Attack', kind: 'passive', desc: '+2d6 damage on your first hit in round 1.' },
+    kenku_recall: { name: 'Kenku Recall', kind: 'passive', desc: 'Advantage on checks with skills you are trained in.' },
+    hidden_step: { name: 'Hidden Step', kind: 'bonus', uses: () => 1, rest: 'short', desc: 'Turn invisible until you attack or your next turn ends.' },
+    shapechanger: { name: 'Shapechanger', kind: 'passive', desc: 'Change your look anytime. Advantage on Deception, Persuasion and Performance.' },
     breath_weapon: { name: 'Breath Weapon', kind: 'action', uses: () => 1, rest: 'short', target: 'area', range: 3, radius: 1, desc: 'Dex save, 2d6 damage to enemies in a small blast (half on save).' }
   };
 
@@ -163,7 +193,7 @@
 
   const CONDITIONS = {
     raging: { name: 'Raging', icon: '😤', good: true }, blessed: { name: 'Blessed', icon: '🙏', good: true }, shielded: { name: 'Shield', icon: '🔰', good: true },
-    shield_of_faith: { name: 'Shield of Faith', icon: '🛡️', good: true }, inspired: { name: 'Inspired', icon: '🎵', good: true }, hidden: { name: 'Hidden', icon: '🫥', good: true },
+    shield_of_faith: { name: 'Shield of Faith', icon: '🛡️', good: true }, inspired: { name: 'Inspired', icon: '🎵', good: true }, hidden: { name: 'Hidden', icon: '🫥', good: true }, shelled: { name: 'In Shell', icon: '🐢', good: true },
     dodging: { name: 'Dodging', icon: '💨', good: true }, helped: { name: 'Helped', icon: '🤝', good: true }, agathys: { name: 'Armor of Agathys', icon: '❄️', good: true },
     reckless: { name: 'Reckless', icon: '💢' }, poisoned: { name: 'Poisoned', icon: '🤢' }, prone: { name: 'Prone', icon: '🫠' }, restrained: { name: 'Restrained', icon: '🕸️' },
     frightened: { name: 'Frightened', icon: '😱' }, charmed: { name: 'Charmed', icon: '💗' }, paralyzed: { name: 'Paralyzed', icon: '🧊' }, asleep: { name: 'Asleep', icon: '💤' },
@@ -304,6 +334,7 @@
     const arm = eq.armor && ARMOR[ITEMS[eq.armor]?.armor || eq.armor];
     if (arm) { const d = mod(s.dex); ac = arm.base + (arm.dexMax == null ? d : Math.min(arm.dexMax, d)); if (ch.features && ch.features.includes('fighting_style')) ac += 1; }
     else { ac = 10 + mod(s.dex); if (C.unarmored && !(eq.shield && C.unarmored === 'wis')) ac += mod(s[C.unarmored]); }
+    const na = RACES[ch.race] && RACES[ch.race].natArmor; if (na) ac = Math.max(ac, na.flat != null ? na.flat : na.base + mod(s.dex));
     if (eq.shield) ac += 2;
     ['ring', 'cloak'].forEach(k => { if (eq[k] && ITEMS[eq[k]]) ac += ITEMS[eq[k]].ac || 0; });
     return ac;
