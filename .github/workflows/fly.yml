@@ -12,9 +12,15 @@ jobs:
       APP: rollcall-dnd
       REGION: ewr
     steps:
+      - name: Skip when the repo has no Fly token yet
+        id: gate
+        run: if [ -n "$FLY_API_TOKEN" ]; then echo "go=1" >> "$GITHUB_OUTPUT"; else echo "No FLY_API_TOKEN secret — skipping deploy."; fi
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.go == '1'
       - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.gate.outputs.go == '1'
       - name: Create the app and its save-file volume on first deploy
+        if: steps.gate.outputs.go == '1'
         run: |
           if ! flyctl status --app "$APP" >/dev/null 2>&1; then
             flyctl apps create "$APP" --org personal
@@ -23,9 +29,11 @@ jobs:
             flyctl volumes create data --app "$APP" --region "$REGION" --size 1 --yes
           fi
       - name: Hand the AI Dungeon Master its key (if the repo has one)
+        if: steps.gate.outputs.go == '1'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           if [ -n "$ANTHROPIC_API_KEY" ]; then echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" | flyctl secrets import --app "$APP" --stage; fi
       - name: Deploy
+        if: steps.gate.outputs.go == '1'
         run: flyctl deploy --remote-only --app "$APP"
