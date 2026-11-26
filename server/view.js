@@ -2,6 +2,15 @@
 const R = require('../public/rules.js');
 const E = require('./engine');
 
+function gearOf(ch) {
+  const w0 = ch.weapons[0]; const w1 = ch.weapons[1];
+  const main = w0 ? (ch.class === 'Wizard' && w0.k === 'quarterstaff' ? 'staff' : w0.k) : null;
+  let off = null;
+  if (ch.equip.shield) off = 'shield';
+  else if (w0 && w1 && w0.light && w1.light && !w0.ranged && !w1.ranged) off = w1.k;
+  else if (w0 && !w0.ranged && !['greataxe', 'greatsword', 'quarterstaff', 'spear'].includes(w0.k)) off = { Sorcerer: 'flame', Warlock: 'orb', Cleric: 'holy' }[ch.class] || null;
+  return { main, off, plus: w0 ? (w0.plus || 0) : 0 };
+}
 function viewFor(c, u, ctx) {
   const dm = ctx.isDM; const aiOn = ctx.aiActive; const dmFull = c.dmMode === 'human' && c.dmUserId === u.id;
   const s = E.scene(c);
@@ -13,8 +22,8 @@ function viewFor(c, u, ctx) {
     const tokens = [];
     for (const t of s.tokens) {
       if (t.gone) continue;
-      if (t.kind === 'pc') { const ch = c.characters[t.charId]; if (!ch) continue; tokens.push({ id: t.id, kind: 'pc', charId: ch.id, name: ch.name, x: t.x, y: t.y, hp: ch.hp, maxHp: ch.maxHp, temp: ch.temp, ac: R.computeAC(ch), conds: ch.conds.map(k => k.k), look: ch.look, cls: ch.class, race: ch.race, dead: ch.dead, facing: t.facing || 1, ownerId: ch.ownerId }); continue; }
-      if (t.kind === 'npc') { if (dmFull || seenAt(t.x, t.y)) tokens.push({ id: t.id, kind: 'npc', npcKey: t.npcKey, name: t.name, x: t.x, y: t.y, look: t.look, chained: !!t.chained }); continue; }
+      if (t.kind === 'pc') { const ch = c.characters[t.charId]; if (!ch) continue; tokens.push({ id: t.id, kind: 'pc', charId: ch.id, name: ch.name, x: t.x, y: t.y, hp: ch.hp, maxHp: ch.maxHp, temp: ch.temp, ac: R.computeAC(ch), conds: ch.conds.map(k => k.k), look: ch.look, cls: ch.class, race: ch.race, dead: ch.dead, facing: t.facing || 1, ownerId: ch.ownerId, gear: gearOf(ch) }); continue; }
+      if (t.kind === 'npc') { if (dmFull || seenAt(t.x, t.y)) tokens.push({ id: t.id, kind: 'npc', npcKey: t.npcKey, name: t.name, x: t.x, y: t.y, look: t.look, chained: !!t.chained, role: c.npcs[t.npcKey]?.art || c.npcs[t.npcKey]?.role }); continue; }
       // monsters
       const visible = visAt(t.x, t.y) || combatIds.has(t.id);
       if (t.disguise && !t.revealed) { if (dmFull || seenAt(t.x, t.y)) tokens.push({ id: t.id, kind: 'mimic', x: t.x, y: t.y, dm: dmFull ? t.name : undefined }); continue; }
@@ -30,7 +39,7 @@ function viewFor(c, u, ctx) {
   const npcs = {};
   Object.values(c.npcs || {}).forEach(n => {
     if (!(n.met || npcsHere.has(n.key) || dmFull)) return;
-    npcs[n.key] = { key: n.key, name: n.name, role: n.role, desc: n.desc, look: n.look, here: npcsHere.has(n.key), met: !!n.met, topics: E.npcTopics(c, n), shop: n.shop ? n.shop.map(k => ({ k, name: R.ITEMS[k].name, icon: R.ITEMS[k].icon, price: R.ITEMS[k].price, desc: R.ITEMS[k].desc || '' })) : null, inn: !!n.inn, heals: !!n.heals, secret: (n.revealed || dmFull) ? n.secret : null, chained: !!n.chained };
+    npcs[n.key] = { key: n.key, name: n.name, role: n.role, art: n.art || null, desc: n.desc, look: n.look, here: npcsHere.has(n.key), met: !!n.met, topics: E.npcTopics(c, n), shop: n.shop ? n.shop.map(k => ({ k, name: R.ITEMS[k].name, icon: R.ITEMS[k].icon, price: R.ITEMS[k].price, desc: R.ITEMS[k].desc || '' })) : null, inn: !!n.inn, heals: !!n.heals, secret: (n.revealed || dmFull) ? n.secret : null, chained: !!n.chained };
   });
   const order = c.turn.order.map((e, i) => ({ i, kind: e.kind, charId: e.charId, tokenId: e.tokenId, init: e.init, name: E.nameOfEntry(c, e) }));
   return {
@@ -42,4 +51,4 @@ function viewFor(c, u, ctx) {
     updatedAt: c.updatedAt
   };
 }
-module.exports = { viewFor };
+module.exports = { viewFor, gearOf };

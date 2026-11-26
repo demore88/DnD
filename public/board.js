@@ -176,8 +176,8 @@
       if (B.opts.targets && B.opts.targets.has(tk.id)) { g.strokeStyle = B.opts.targetColor || '#ff5a3d'; g.lineWidth = 3; g.beginPath(); g.arc(cx, cy, 21 * size + Math.sin(t * 7) * 2.5, 0, 7); g.stroke(); }
       if (B.opts.sel === tk.id) { g.strokeStyle = '#fff'; g.lineWidth = 2.5; g.setLineDash([5, 4]); g.beginPath(); g.arc(cx, cy, 22 * size, 0, 7); g.stroke(); g.setLineDash([]); }
       let svg;
-      if (tk.kind === 'pc') svg = root.ART.heroSVG(tk.look, tk.cls, tk.race, 100);
-      else if (tk.kind === 'npc') svg = root.ART.heroSVG(tk.look, null, 'Human', 100, { gear: false });
+      if (tk.kind === 'pc') svg = root.ART.heroSVG(tk.look, tk.cls, tk.race, 100, tk.gear || {});
+      else if (tk.kind === 'npc') svg = root.ART.npcSVG(tk.look, tk.chained ? 'prisoner' : tk.role, 100);
       else if (tk.kind === 'mimic') svg = root.ART.propSVG('chest', 100, {});
       else svg = root.ART.monsterSVG(tk.mkey, 100, { flip: tk.facing < 0 });
       const img = root.ART.toImg(svg); const sz = (tk.kind === 'mimic' ? 34 : 42) * size;

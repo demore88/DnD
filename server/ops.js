@@ -36,7 +36,7 @@ function handle(c, u, op, b) {
     // ----- setup -----
     case 'character': {
       if (ch && !b.edit) return { error: 'You already have a hero here' };
-      if (ch && b.edit) { if (b.name) ch.name = String(b.name).slice(0, 24); if (b.backstory != null) ch.backstory = String(b.backstory).slice(0, 500); if (b.look) Object.assign(ch.look, b.look); if (t) t.name = ch.name; return { ok: true }; }
+      if (ch && b.edit) { if (b.name) ch.name = String(b.name).slice(0, 24); if (b.backstory != null) ch.backstory = String(b.backstory).slice(0, 500); if (b.look) Object.assign(ch.look, E.cleanLook(b.look)); if (t) t.name = ch.name; return { ok: true }; }
       if (Object.keys(c.characters).length >= 6) return { error: 'The party is full (6 heroes max)' };
       const nc = E.buildCharacter(u, b); c.characters[nc.id] = nc;
       E.addLog(c, 'system', `🧙 ${nc.name} the ${nc.race} ${nc.class} joins the party!`, { fx: { k: 'join' } });

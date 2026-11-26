@@ -70,13 +70,22 @@ function buildCharacter(owner, input) {
     spells: [], slots: [], features: [], uses: {}, pool: 0, ki: null,
     inventory: [{ k: 'potion_healing', n: 'Potion of Healing', q: 2 }, { k: 'rations', n: 'Rations', q: 5 }, { k: 'torch', n: 'Torch', q: 3 }, { k: 'rope', n: 'Rope, 50 ft', q: 1 }],
     gold: 15 + rnd(10), conds: [], deathSaves: 0, deathFails: 0, stable: false, dead: false,
-    look: Object.assign({ skin: '#e0b48a', hair: '#4a2c17', cloak: C.color, hairStyle: 0 }, input.look || {}), backstory: String(input.backstory || '').slice(0, 500), joinedAt: now()
+    look: Object.assign({ skin: '#e0b48a', hair: '#4a2c17', cloak: C.color, hairStyle: 0 }, cleanLook(input.look)), backstory: String(input.backstory || '').slice(0, 500), joinedAt: now()
   };
   if (cls === 'Rogue') ch.inventory.push({ k: 'thieves_tools', n: "Thieves' Tools", q: 1 });
   if (cls === 'Cleric' || cls === 'Paladin') ch.inventory.push({ k: 'holy_water', n: 'Holy Water', q: 1 });
   if (R.RACES[race].feature) ch.features.push(R.RACES[race].feature);
   refreshClass(ch); ch.hp = ch.maxHp;
   return ch;
+}
+function cleanLook(l) {
+  const out = {}; if (!l || typeof l !== 'object') return out;
+  const col = (v) => typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v : undefined;
+  ['skin', 'hair', 'cloak', 'trim', 'eyes', 'cape', 'scale', 'horns', 'shieldColor'].forEach(k => { const v = col(l[k]); if (v) out[k] = v; else if (l[k] === null) out[k] = null; });
+  ['hairStyle', 'beard', 'brows', 'build'].forEach(k => { const v = parseInt(l[k], 10); if (!isNaN(v) && v >= 0 && v < 12) out[k] = v; });
+  ['mark', 'headgear'].forEach(k => { if (typeof l[k] === 'string' && /^[a-z]{1,12}$/.test(l[k])) out[k] = l[k]; });
+  ['gloves', 'earring'].forEach(k => { if (l[k] != null) out[k] = !!l[k]; });
+  return out;
 }
 function refreshClass(ch) {
   const C = R.CLASSES[ch.class];
@@ -1012,7 +1021,7 @@ function unequip(c, ch, what, i) {
 }
 
 module.exports = {
-  setHooks, uid, now, rollDice, d20, addLog, newCampaign, buildCharacter, refreshClass, makeWeapon, featureUses, attacksPerAction, spellAtk, spellDC, skillMod, saveMod, passivePerception,
+  cleanLook, setHooks, uid, now, rollDice, d20, addLog, newCampaign, buildCharacter, refreshClass, makeWeapon, featureUses, attacksPerAction, spellAtk, spellDC, skillMod, saveMod, passivePerception,
   invFind, invAdd, invRemove, partyHas, scene, pcTokens, tokenOfChar, charOfToken, tileAt, walkable, occupied, freeSpotNear, buildScene, enterScene, updateVision, wakeEncounter,
   event, offerQuest, completeQuest, giveXp, condsOf, hasCond, addCond, removeCond, isHelpless, hpOf, acOf, isAlive, isUp, damage, heal, killMonster, monsterToken,
   startCombat, endCombat, checkCombatEnd, beginTurn, advance, buildExploreOrder, currentEntry, currentUserId, nameOfEntry, activeMonsters, freshRes,

@@ -29,8 +29,55 @@
   const sheetOpen = () => !!sheetRoot.innerHTML;
   function logout() { localStorage.removeItem('rc_token'); S.token = null; S.me = null; if (S.ws) S.ws.close(); showSplash(true); }
   const svgImg = (svg, cls = '') => `<span class="pic ${cls}">${svg}</span>`;
-  const heroPic = (ch, size = 64) => svgImg(ART.heroSVG(ch.look, ch.class || ch.cls, ch.race, size));
-  const npcPic = (n, size = 56) => svgImg(ART.heroSVG(n.look || {}, null, 'Human', size, { gear: false }));
+  function gearOf(ch) {
+    if (!ch.weapons) return ch.gear || {}; const w0 = ch.weapons[0], w1 = ch.weapons[1];
+    const main = w0 ? (ch.class === 'Wizard' && w0.k === 'quarterstaff' ? 'staff' : w0.k) : null; let off = null;
+    if (ch.equip && ch.equip.shield) off = 'shield'; else if (w0 && w1 && w0.light && w1.light && !w0.ranged && !w1.ranged) off = w1.k;
+    else if (w0 && !w0.ranged && !['greataxe', 'greatsword', 'quarterstaff', 'spear'].includes(w0.k)) off = { Sorcerer: 'flame', Warlock: 'orb', Cleric: 'holy' }[ch.class] || null;
+    return { main, off, plus: w0 ? (w0.plus || 0) : 0 };
+  }
+  const heroArt = (ch, size) => ART.heroSVG(ch.look, ch.class || ch.cls, ch.race, size, gearOf(ch));
+  const heroPic = (ch, size = 64) => svgImg(heroArt(ch, size));
+  const npcPic = (n, size = 56) => svgImg(ART.npcSVG(n.look || {}, n.chained ? 'prisoner' : (n.art || n.role), size));
+  // ---------- appearance editor ----------
+  const SW = { skin: ['#f6d3b3', '#eec39a', '#e0b48a', '#c68e5e', '#a86f45', '#8d5a3a', '#5c3a24', '#9bc48a', '#7fb0a0', '#b7a2d6', '#d97a6a', '#9aa3ad'],
+    hair: ['#1d140e', '#4a2c17', '#8a5a2b', '#c98f4a', '#d9a62e', '#f0dfa0', '#e8e0d0', '#b5452c', '#e86a8a', '#2f5b9a', '#4f8a3a', '#5a5a5a'],
+    cloak: ['#b5452c', '#8a2f1c', '#c7782e', '#d9a62e', '#4f8a3a', '#3f6b4a', '#2f5b9a', '#5b6f86', '#8a4fa3', '#4b2f6b', '#3b3b46', '#e8e0d0'],
+    eyes: ['#2b1d12', '#4a7ab5', '#4f8a3a', '#8a5a2b', '#9aa3ad', '#b5452c', '#ffd36b', '#9b6bd1'], scale: ['#c9553c', '#4f8a3a', '#2f5b9a', '#d9a62e', '#3b3b46', '#c9ccd1', '#8a2f1c', '#e8e0d0'] };
+  const HG_NAMES = { auto: 'Class default', none: 'Nothing', hood: 'Hood', helm: 'Helmet', wizard: 'Wizard hat', circlet: 'Circlet', bandana: 'Bandana', feather: 'Feathered cap', horned: 'Horned helm', crown: 'Crown', tricorn: 'Tricorn', straw: 'Straw hat', headband: 'Headband' };
+  const MARK_NAMES = { none: 'None', freckles: 'Freckles', scar: 'Scar', eyepatch: 'Eyepatch', warpaint: 'War paint', glasses: 'Glasses', tattoo: 'Tattoo' };
+  function lookEditor(look, race, cls) {
+    const sw = (key, list, allowNone) => `<div class="swatches">${allowNone ? `<button class="sw none ${!look[key] ? 'on' : ''}" data-lk="${key}" data-v="">✕</button>` : ''}${list.map(c => `<button class="sw ${look[key] === c ? 'on' : ''}" style="background:${c}" data-lk="${key}" data-v="${c}"></button>`).join('')}</div>`;
+    const chips = (key, opts, cur) => `<div class="chips">${opts.map(([v, l]) => `<button class="chip ${String(cur) === String(v) ? 'on' : ''}" data-lk="${key}" data-v="${v}">${l}</button>`).join('')}</div>`;
+    const beardDef = look.beard != null ? look.beard : (race === 'Dwarf' ? 3 : 0);
+    const buildDef = look.build != null ? look.build : (race === 'Half-Orc' || race === 'Dragonborn' || cls === 'Barbarian' ? 2 : race === 'Elf' ? 0 : 1);
+    return `<div class="lookedit">
+      ${race === 'Dragonborn' ? `<div class="small">Scales</div>${sw('scale', SW.scale)}` : `<div class="small">Skin</div>${sw('skin', SW.skin)}`}
+      <div class="small">Hair color</div>${sw('hair', SW.hair)}
+      <div class="small">Hair style</div>${chips('hairStyle', ART.HAIR_STYLES.map((h, i) => [i, h]), look.hairStyle || 0)}
+      ${race !== 'Dragonborn' ? `<div class="small">Facial hair</div>${chips('beard', ART.BEARDS.map((h, i) => [i, h]), beardDef)}` : ''}
+      <div class="small">Eyes</div>${sw('eyes', SW.eyes, true)}
+      <div class="small">Brows</div>${chips('brows', [[0, 'Normal'], [1, 'Fierce'], [2, 'Kind']], look.brows || 0)}
+      <div class="small">Face</div>${chips('mark', ART.MARKS.map(m => [m, MARK_NAMES[m]]), look.mark || 'none')}
+      <div class="small">Headgear</div>${chips('headgear', ART.HEADGEAR.map(h => [h, HG_NAMES[h] || h]), look.headgear || 'auto')}
+      <div class="small">Build</div>${chips('build', [[0, 'Slim'], [1, 'Average'], [2, 'Broad'], [3, 'Huge']], buildDef)}
+      <div class="small">Outfit</div>${sw('cloak', SW.cloak)}
+      <div class="small">Trim</div>${sw('trim', SW.cloak, true)}
+      <div class="small">Cape</div>${sw('cape', SW.cloak, true)}
+      <div class="small">Extras</div><div class="chips"><button class="chip ${look.gloves ? 'on' : ''}" data-lk="gloves" data-v="${look.gloves ? '' : '1'}">🧤 Gloves</button><button class="chip ${look.earring ? 'on' : ''}" data-lk="earring" data-v="${look.earring ? '' : '1'}">✨ Earring</button><button class="chip" id="lkRandom">🎲 Randomize</button></div></div>`;
+  }
+  function bindLook(root, look, onChange) {
+    $$('[data-lk]', root).forEach(b => b.onclick = () => { const k = b.dataset.lk; let v = b.dataset.v; if (['hairStyle', 'beard', 'brows', 'build'].includes(k)) v = +v; if (k === 'gloves' || k === 'earring') v = !!v; if (v === '') v = null; look[k] = v; onChange(); });
+    const r = $('#lkRandom', root); if (r) r.onclick = () => { const pk = (a) => a[Math.floor(Math.random() * a.length)]; Object.assign(look, { skin: pk(SW.skin.slice(0, 7)), hair: pk(SW.hair), hairStyle: Math.floor(Math.random() * 10), beard: pk([0, 0, 0, 1, 2, 3, 5]), mark: pk(ART.MARKS), cloak: pk(SW.cloak), trim: pk([null, ...SW.cloak]), eyes: pk([null, ...SW.eyes]), brows: Math.floor(Math.random() * 3) }); onChange(); };
+  }
+  function lookSheet() {
+    const ch = myChar(); const look = JSON.parse(JSON.stringify(ch.look || {}));
+    const draw = () => sheet(`<h2>🎨 ${esc(ch.name)}'s look</h2><div class="center lookprev">${ART.heroSVG(look, ch.class, ch.race, 140, gearOf(ch))}</div>${lookEditor(look, ch.race, ch.class)}<button class="btn green block lg" id="lkSave">Save look</button>`, (m) => {
+      bindLook(m, look, () => { const sc = m.scrollTop; draw(); sheetRoot.querySelector('.sheet').scrollTop = sc; });
+      $('#lkSave').onclick = async () => { await act('character', { edit: true, look }); closeSheet(); toast('🎨 Looking good!'); };
+    });
+    draw();
+  }
 
   // ---------------- push ----------------
   const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
@@ -231,7 +278,7 @@
     if (!inCombat()) { const q = C.quests.find(x => x.status === 'active' && x.main) || C.quests.find(x => x.status === 'active'); const o = q && q.objectives.find(x => !x.done); el.innerHTML = q && o ? `<button class="questline" id="ql">📜 <b>${esc(q.title)}:</b> ${esc(o.t)}</button>` : ''; el.className = 'initbar quest'; if ($('#ql')) $('#ql').onclick = () => { S.tab = 'journal'; renderTabs(); renderTab(true); }; return; }
     el.className = 'initbar';
     el.innerHTML = C.turn.order.map((e, i) => { const cur = i === C.turn.index; let pic, hp = 1, dead = false;
-      if (e.kind === 'pc') { const ch = C.characters[e.charId]; if (!ch) return ''; pic = ART.heroSVG(ch.look, ch.class, ch.race, 40); hp = Math.max(0, ch.hp) / ch.maxHp; dead = ch.hp <= 0; }
+      if (e.kind === 'pc') { const ch = C.characters[e.charId]; if (!ch) return ''; pic = heroArt(ch, 40); hp = Math.max(0, ch.hp) / ch.maxHp; dead = ch.hp <= 0; }
       else { const t = C.scene.tokens.find(x => x.id === e.tokenId); if (!t) return ''; pic = ART.monsterSVG(t.mkey, 40); hp = t.hpPct; }
       return `<div class="ini ${cur ? 'cur' : ''} ${e.kind} ${dead ? 'dead' : ''}">${pic}<i style="width:${hp * 100}%"></i></div>`; }).join('');
     const cur = el.querySelector('.cur'); if (cur) cur.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
@@ -636,7 +683,7 @@
     const castAb = RR.CLASSES[ch.class].castAb;
     const eq = ch.equip;
     main.innerHTML = `<div class="scroll hero">
-      <div class="card herohead"><div class="portrait">${ART.heroSVG(ch.look, ch.class, ch.race, 110)}</div><div class="grow"><h2>${esc(ch.name)}</h2><div>Level ${ch.level} ${esc(ch.race)} ${esc(ch.class)}</div>
+      <div class="card herohead"><button class="portrait" id="bLook">${heroArt(ch, 110)}<span class="editpen">🎨</span></button><div class="grow"><h2>${esc(ch.name)}</h2><div>Level ${ch.level} ${esc(ch.race)} ${esc(ch.class)}</div>
         <div class="hpbar big"><i style="width:${Math.max(0, ch.hp) / ch.maxHp * 100}%"></i>${ch.temp ? `<u style="width:${Math.min(100, ch.temp / ch.maxHp * 100)}%"></u>` : ''}<span>${ch.dead ? '☠️ Dead' : ch.hp <= 0 ? '💔 Down' : `${ch.hp} / ${ch.maxHp} HP`}${ch.temp ? ` +${ch.temp}` : ''}</span></div>
         <div class="xp"><div class="hpbar xpbar"><i style="width:${Math.min(100, (ch.xp - prevXp) / Math.max(1, nextXp - prevXp) * 100)}%"></i><span>XP ${ch.xp} / ${nextXp}</span></div>${ch.levelUpReady ? `<button class="btn gold sm pulse" id="bLvl">⭐ Level up!</button>` : ''}</div></div></div>
       <div class="statrow"><div><b>🛡️ ${ac}</b>AC</div><div><b>👣 ${ch.speed}</b>Speed</div><div><b>${fmt(RR.mod(ch.scores.dex))}</b>Init</div><div><b>${fmt(RR.prof(ch.level))}</b>Prof</div><div><b>💰 ${ch.gold}</b>Gold</div></div>
@@ -654,6 +701,7 @@
       <div class="card"><h3>🎯 Skills</h3><div class="skillgrid">${Object.keys(RR.SKILLS).map(k => `<button class="sk ${ch.skills.includes(k) ? 'prof' : ''}" data-sk="${k}"><span>${cap(k)}</span><b>${fmt(sk(k))}</b></button>`).join('')}</div></div>
       <div class="card"><h3>📖 Backstory</h3><textarea id="bs" rows="3" placeholder="Where does your hero come from? What do they want? The DM uses this!">${esc(ch.backstory)}</textarea><button class="btn ghost sm" id="saveBs">Save</button></div>
       <div style="height:20px"></div></div>`;
+    $('#bLook').onclick = lookSheet;
     if ($('#bLvl')) $('#bLvl').onclick = async () => { try { const r = await act('levelup', {}); if (r.levelup) levelUpCard(r.levelup); } catch (e) { } };
     $$('[data-ab]').forEach(b => b.onclick = () => sheet(`<h2>${RR.ABILITY_NAMES[b.dataset.ab]}</h2><div class="col"><button class="btn green block" id="abC">🎲 ${RR.ABILITY_NAMES[b.dataset.ab]} check (${fmt(RR.mod(ch.scores[b.dataset.ab]))})</button><button class="btn ghost block" id="abS">🛡️ Saving throw (${fmt(RR.mod(ch.scores[b.dataset.ab]) + (ch.saves.includes(b.dataset.ab) ? RR.prof(ch.level) : 0))})</button></div>`, () => { $('#abC').onclick = () => { closeSheet(); act('check', { ability: b.dataset.ab }); }; $('#abS').onclick = () => { closeSheet(); act('check', { ability: b.dataset.ab, save: true }); }; }));
     $$('[data-sk]').forEach(b => b.onclick = () => act('check', { skill: b.dataset.sk }));
@@ -697,18 +745,16 @@
     const HA = ['#1d140e', '#4a2c17', '#8a5a2b', '#d9a62e', '#e8e0d0', '#b5452c', '#2f5b9a', '#5a5a5a'];
     const CL = ['#b5452c', '#2f5b9a', '#4f8a3a', '#8a4fa3', '#3b3b46', '#d9a62e', '#c7782e', '#5b6f86'];
     main.innerHTML = `<div class="scroll creator">
-      <div class="card preview"><div class="portrait">${ART.heroSVG(look, st.class, st.race, 120)}</div><div class="grow"><input id="hn" value="${esc(st.name)}" maxlength="24" placeholder="Hero name"><div class="small">${esc(st.race)} ${esc(st.class)} · ❤️ ${hp} HP · 🛡️ AC ${RR.computeAC({ class: st.class, scores: Object.fromEntries(RR.ABILITIES.map(a => [a, fin(a)])), equip: { armor: C.start.armor, shield: C.start.shield }, features: RR.featuresAt(st.class, 1) })}</div><button class="chip" id="rndName">🎲 Random name</button></div></div>
-      <h3>1 · Class</h3><div class="picks">${Object.keys(RR.CLASSES).map(k => `<button class="pick ${st.class === k ? 'on' : ''}" data-class="${k}">${ART.heroSVG({ skin: look.skin, hair: look.hair, cloak: RR.CLASSES[k].color, hairStyle: look.hairStyle }, k, st.race, 54)}<b>${k}</b></button>`).join('')}</div>
+      <div class="card preview"><div class="portrait">${ART.heroSVG(look, st.class, st.race, 120, { main: { Wizard: 'staff' }[st.class] || RR.CLASSES[st.class].start.weapons[0], off: RR.CLASSES[st.class].start.shield ? 'shield' : undefined })}</div><div class="grow"><input id="hn" value="${esc(st.name)}" maxlength="24" placeholder="Hero name"><div class="small">${esc(st.race)} ${esc(st.class)} · ❤️ ${hp} HP · 🛡️ AC ${RR.computeAC({ class: st.class, scores: Object.fromEntries(RR.ABILITIES.map(a => [a, fin(a)])), equip: { armor: C.start.armor, shield: C.start.shield }, features: RR.featuresAt(st.class, 1) })}</div><button class="chip" id="rndName">🎲 Random name</button></div></div>
+      <h3>1 · Class</h3><div class="picks">${Object.keys(RR.CLASSES).map(k => `<button class="pick ${st.class === k ? 'on' : ''}" data-class="${k}">${ART.heroSVG(Object.assign({}, look, { cloak: RR.CLASSES[k].color, headgear: 'auto', trim: null }), k, st.race, 54)}<b>${k}</b></button>`).join('')}</div>
       <div class="blurb">${C.icon} <b>${st.class}:</b> ${esc(C.blurb)}</div>
-      <h3>2 · Race</h3><div class="picks race">${Object.keys(RR.RACES).map(r => `<button class="pick ${st.race === r ? 'on' : ''}" data-race="${r}">${ART.heroSVG({ skin: look.skin, hair: look.hair, cloak: look.cloak, hairStyle: look.hairStyle }, null, r, 50, { gear: false })}<b>${r}</b><span>${Object.entries(RR.RACES[r].bonus).map(([k, v]) => k.toUpperCase() + '+' + v).join(' ').replace('STR+1 DEX+1 CON+1 INT+1 WIS+1 CHA+1', 'All +1')}</span></button>`).join('')}</div>
+      <h3>2 · Race</h3><div class="picks race">${Object.keys(RR.RACES).map(r => `<button class="pick ${st.race === r ? 'on' : ''}" data-race="${r}">${ART.heroSVG(Object.assign({}, look, { headgear: 'none', beard: undefined, build: undefined }), null, r, 50, { gear: false })}<b>${r}</b><span>${Object.entries(RR.RACES[r].bonus).map(([k, v]) => k.toUpperCase() + '+' + v).join(' ').replace('STR+1 DEX+1 CON+1 INT+1 WIS+1 CHA+1', 'All +1')}</span></button>`).join('')}</div>
       <div class="blurb"><b>${st.race}:</b> ${esc(race.blurb)} ${esc(race.traits.join(' · '))}</div>
       <h3>3 · Abilities</h3><div class="row wrap"><button class="chip ${st.method === 'std' ? 'on' : ''}" id="mStd">✨ Recommended</button><button class="chip ${st.method === 'roll' ? 'on' : ''}" id="mRoll">🎲 Roll 4d6</button></div>
       <div class="abil edit">${RR.ABILITIES.map(a => `<div class="card ab"><div class="k">${a.toUpperCase()}${a === C.primary ? ' ⭐' : ''}</div><div class="m">${fin(a)}</div><div class="s">${fmt(RR.mod(fin(a)))}</div><div class="row"><button class="mini" data-dn="${a}">◀</button><button class="mini" data-up="${a}">▶</button></div></div>`).join('')}</div>
       <div class="small muted center">◀ ▶ swaps scores between abilities. ⭐ = most important for a ${st.class}.</div>
       <h3>4 · Skills <span class="small muted">pick ${C.picks}</span></h3><div class="chips">${C.skillChoices.map(k => `<button class="chip ${st.skills.includes(k) ? 'on' : ''}" data-sk="${k}">${cap(k)}</button>`).join('')}</div>
-      <h3>5 · Look</h3><div class="small">Skin</div><div class="swatches">${SK.map(c => `<button class="sw ${look.skin === c ? 'on' : ''}" style="background:${c}" data-skin="${c}"></button>`).join('')}</div>
-      <div class="small">Hair</div><div class="swatches">${HA.map(c => `<button class="sw ${look.hair === c ? 'on' : ''}" style="background:${c}" data-hair="${c}"></button>`).join('')}<button class="chip" id="hstyle">Style ${(look.hairStyle || 0) + 1}/5</button></div>
-      <div class="small">Cloak</div><div class="swatches">${CL.map(c => `<button class="sw ${look.cloak === c ? 'on' : ''}" style="background:${c}" data-cloak="${c}"></button>`).join('')}</div>
+      <h3>5 · Look</h3>${lookEditor(st.look, st.race, st.class)}
       <h3>6 · Backstory <span class="small muted">optional</span></h3><textarea id="hb" rows="3" placeholder="Raised by smugglers. Owes a dragon 3 gold. Afraid of ducks.">${esc(st.backstory)}</textarea>
       <button class="btn red block xl" id="hgo">⚔️ Join the adventure</button><div style="height:20px"></div></div>`;
     const keep = () => { st.name = $('#hn').value; st.backstory = $('#hb').value; };
@@ -721,8 +767,7 @@
     const swap = (a, dir) => { const vals = order.map(k => st.assign[k]); const sorted = [...new Set(vals)].sort((x, y) => x - y); const cur = st.assign[a]; const other = order.filter(k => k !== a).sort((x, y) => st.assign[x] - st.assign[y]); const target = dir > 0 ? other.find(k => st.assign[k] > cur) : other.slice().reverse().find(k => st.assign[k] < cur); if (!target) return; const tv = st.assign[target]; st.assign[target] = cur; st.assign[a] = tv; rer(); };
     $$('[data-up]').forEach(b => b.onclick = () => swap(b.dataset.up, 1)); $$('[data-dn]').forEach(b => b.onclick = () => swap(b.dataset.dn, -1));
     $$('[data-sk]').forEach(b => b.onclick = () => { const k = b.dataset.sk; if (st.skills.includes(k)) st.skills = st.skills.filter(x => x !== k); else if (st.skills.length < C.picks) st.skills.push(k); else toast(`Pick ${C.picks} — tap one to swap it`); rer(); });
-    $$('[data-skin]').forEach(b => b.onclick = () => { st.look.skin = b.dataset.skin; rer(); }); $$('[data-hair]').forEach(b => b.onclick = () => { st.look.hair = b.dataset.hair; rer(); }); $$('[data-cloak]').forEach(b => b.onclick = () => { st.look.cloak = b.dataset.cloak; rer(); });
-    $('#hstyle').onclick = () => { st.look.hairStyle = ((st.look.hairStyle || 0) + 1) % 5; rer(); };
+    bindLook($('.lookedit'), st.look, rer);
     $('#rndName').onclick = () => { const A = ['Bram', 'Kira', 'Thorne', 'Wyn', 'Ash', 'Rook', 'Juniper', 'Tamsin', 'Fen', 'Orla', 'Kael', 'Pip', 'Sable', 'Ivo', 'Nim', 'Rhea', 'Dax', 'Lark']; const B = ['Ironfoot', 'Swiftbrook', 'Ashveil', 'Thornwood', 'Stormcall', 'Quickfingers', 'Brightshield', 'Moonwhisper', 'Emberheart', 'Graves']; st.name = A[Math.floor(Math.random() * A.length)] + ' ' + B[Math.floor(Math.random() * B.length)]; $('#hn').value = st.name; };
     $('#hgo').onclick = async () => {
       keep(); if (!st.name.trim()) return toast('Name your hero'); if (st.skills.length < C.picks) { const left = C.skillChoices.filter(k => !st.skills.includes(k)); while (st.skills.length < C.picks && left.length) st.skills.push(left.shift()); }
