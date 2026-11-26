@@ -24,6 +24,8 @@ function viewFor(c, u, ctx) {
       if (t.gone) continue;
       if (t.kind === 'pc') { const ch = c.characters[t.charId]; if (!ch) continue; tokens.push({ id: t.id, kind: 'pc', charId: ch.id, name: ch.name, x: t.x, y: t.y, hp: ch.hp, maxHp: ch.maxHp, temp: ch.temp, ac: R.computeAC(ch), conds: ch.conds.map(k => k.k), look: ch.look, cls: ch.class, race: ch.race, dead: ch.dead, facing: t.facing || 1, ownerId: ch.ownerId, gear: gearOf(ch) }); continue; }
       if (t.kind === 'npc') { if (dmFull || seenAt(t.x, t.y)) tokens.push({ id: t.id, kind: 'npc', npcKey: t.npcKey, name: t.name, x: t.x, y: t.y, look: t.look, chained: !!t.chained, role: c.npcs[t.npcKey]?.art || c.npcs[t.npcKey]?.role }); continue; }
+      if (t.kind === 'ally') { tokens.push({ id: t.id, kind: 'ally', mkey: t.mkey, petKey: t.petKey, name: t.name, x: t.x, y: t.y, hpPct: Math.max(0, Math.ceil(t.hp / t.maxHp * 10) / 10), hp: t.hp, maxHp: t.maxHp, ac: t.ac, ownerId: t.ownerId, conds: (t.conds || []).map(k => k.k), facing: t.facing || 1, size: t.size || 1, summoned: !!t.summonedBy }); continue; }
+      if (t.banished && !dmFull) continue;
       // monsters
       const visible = visAt(t.x, t.y) || combatIds.has(t.id);
       if (t.disguise && !t.revealed) { if (dmFull || seenAt(t.x, t.y)) tokens.push({ id: t.id, kind: 'mimic', x: t.x, y: t.y, dm: dmFull ? t.name : undefined }); continue; }
@@ -44,7 +46,7 @@ function viewFor(c, u, ctx) {
   const order = c.turn.order.map((e, i) => ({ i, kind: e.kind, charId: e.charId, tokenId: e.tokenId, init: e.init, name: E.nameOfEntry(c, e) }));
   return {
     id: c.id, code: c.code, name: c.name, premise: c.premise, ownerId: c.ownerId, dmMode: c.dmMode, dmUserId: c.dmUserId, aiReady: ctx.aiReady, aiActive: aiOn, aiBusy: !!c.aiBusy,
-    pace: c.pace, turnTimer: c.turnTimer, status: c.status, members: ctx.members, characters: c.characters, adventure: c.adventure ? { title: c.adventure.title, premise: c.adventure.premise, chapter: c.adventure.chapter, done: !!c.adventureDone } : null,
+    pace: c.pace, turnTimer: c.turnTimer, status: c.status, members: ctx.members, music: ctx.music || {}, characters: c.characters, world: c.world ? { nodes: c.world.nodes, edges: c.world.edges, at: c.world.at } : null, rep: c.rep || null, safety: c.safety || null, adventure: c.adventure ? { title: c.adventure.title, premise: c.adventure.premise, chapter: c.adventure.chapter, done: !!c.adventureDone } : null,
     log: c.log.slice(-300), turn: { mode: c.turn.mode, round: c.turn.round, phase: c.turn.phase, index: c.turn.index, order, current: E.currentEntry(c), currentUserId: E.currentUserId(c), currentName: E.nameOfEntry(c, E.currentEntry(c)), res: c.turn.res, pendingRoll: c.turn.pendingRoll, startedAt: c.turn.startedAt },
     scene: sceneView, quests: c.quests.filter(q => q.status !== 'hidden' || dmFull), npcs, library: c.library, notes: dm ? c.notes : [], isDM: dm, dmFull, me: u.id, shortRests: c.shortRests,
     scenes: dmFull ? Object.entries(c.sceneDefs || {}).map(([k, d]) => ({ key: k, name: d.name, visited: !!c.scenes[k]?.visited })) : Object.entries(c.scenes || {}).filter(([, sc]) => sc.visited).map(([k, sc]) => ({ key: k, name: sc.name, visited: true })),

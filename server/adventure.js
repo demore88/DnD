@@ -96,7 +96,7 @@ function generateNext(c, level, hubKey, outline) {
   const bossGroup = buildEncounter(biome, level, party, 'boss', { lead: outline?.boss, max: 4 });
   const boss = bossGroup[0];
   const giverKey = `giver_${n}`; const g = outline?.giver || pick(GIVERS);
-  const hook = outline?.hook || pick(HOOKS[biome] || HOOKS[theme] || HOOKS.dungeon).replace('{name}', name);
+  const hook = (outline?.hook || pick(HOOKS[biome] || HOOKS[theme] || HOOKS.dungeon).replace('{name}', name)).replace(/\bthe The\b/g, 'the').replace(/\bThe The\b/g, 'The');
   c.npcs[giverKey] = { key: giverKey, name: g.name, role: g.role, desc: g.desc, look: g.look, scene: hubKey, met: false, revealed: false, secret: outline?.secret || '',
     topics: Object.assign({ 'The trouble': hook, 'The way there': `Take the road out of town. You can't miss the ${name} — just follow the crows.` }, outline?.topics || {}), quest: `q${n}` };
   c.sceneDefs[roadKey] = { name: outline?.roadName || `Road to the ${name.replace(/^The /, '')}`, kind: 'wild', theme: theme === 'forest' ? 'forest' : 'road', desc: outline?.roadDesc || 'The road narrows. Birds go quiet.',

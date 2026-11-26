@@ -53,7 +53,9 @@ Reply with ONLY one JSON object (no other text). Keys (omit what you don't need)
  "remove": [monster names that flee, surrender or leave],
  "quest_offer": bool (an NPC offers their quest), "quest_add": {"title": string, "desc": string, "objectives": [string], "reward_gold": number, "reward_xp": number},
  "quest_progress": [{"quest": title, "objective": number (0-based)}],
- "reveal_secret": bool (the NPC reveals their secret), "memory_note": string (facts to remember, under 25 words)}`;
+ "reveal_secret": bool (the NPC reveals their secret), "memory_note": string (facts to remember, under 25 words), "rep_change": {"<faction key>": number between -10 and 10} (only when the party clearly helps or harms a faction)}
+World: the realm has several towns linked by roads, and factions (watch, guild, circle, temple, crown) that remember what the heroes do. Mention reputation when NPCs react. Heroes may have animal companions or familiars — give the animals personality. Each hero may have a personal quest (marked ⭐) drawn from their backstory: weave it in.
+ALWAYS follow the TABLE SAFETY rules in the state below. They override everything else.`;
 
 function stateText(c) {
   const s = E.scene(c);
@@ -63,8 +65,16 @@ function stateText(c) {
   const quests = c.quests.filter(q => q.status !== 'hidden').map(q => `- ${q.title} [${q.status}]: ${q.objectives.map((o, i) => `${i}.${o.done ? '✔' : '☐'} ${o.t}`).join(' ')}`).join('\n');
   const poi = s ? s.pois.filter(p => !p.hidden && p.type !== 'trap').map(p => `${p.name}${p.opened ? ' (looted)' : ''}`).join(', ') : '';
   const recent = c.log.slice(-28).filter(e => e.kind !== 'move').map(e => `[${e.kind}${e.who ? ' ' + e.who : ''}] ${e.text}`).join('\n');
-  return `ADVENTURE: ${c.adventure?.title} — ${c.adventure?.premise || c.premise}
-LOCATION: ${s?.name} (${s?.kind}). ${s?.desc}
+  const SAF = c.safety || {}; const lvl = SAF.level || 'teen';
+  const safety = `TABLE SAFETY: content level "${lvl}" — ${lvl === 'family' ? 'family-friendly (ages 8+): no blood or gore, defeated enemies are knocked out or flee rather than killed on screen, no scary body horror, no romance, no swearing, keep peril light and fun.' : 'PG-13 (ages 13+): adventurous peril and spooky moments are fine, but no graphic gore, no sexual content, no real-world hate, no self-harm, no swearing stronger than "blast" or "darn".'}${(SAF.lines || []).length ? ` NEVER include these topics: ${SAF.lines.join(', ')}.` : ''}${SAF.paused ? ' A player tapped the PAUSE card recently: keep things gentle and away from the last scene\'s intense element.' : ''}`;
+  const here = c.world ? Object.values(c.world.nodes).find(n => n.scene === c.sceneId) : null;
+  const repTxt = c.rep ? Object.entries(c.rep).map(([k, v]) => `${k} ${v} (${R.repTier(v).n})`).join(', ') : '';
+  const pets = Object.values(c.characters).filter(ch => (ch.pets || []).length).map(ch => `${ch.name}: ${(ch.pets || []).map(p => p.name).join(', ')}`).join('; ');
+  const subs = Object.values(c.characters).filter(ch => ch.subclass).map(ch => `${ch.name}: ${R.SUBCLASSES[ch.class]?.[ch.subclass]?.name}`).join('; ');
+  return `${safety}
+ADVENTURE: ${c.adventure?.title} — ${c.adventure?.premise || c.premise}
+LOCATION: ${s?.name} (${s?.kind}). ${s?.desc}${here ? ` [Held by ${R.FACTIONS[here.faction]?.name}]` : ''}
+REPUTATION: ${repTxt || 'n/a'}${pets ? `\nCOMPANIONS: ${pets}` : ''}${subs ? `\nPATHS: ${subs}` : ''}
 VISIBLE HERE: ${poi || 'nothing notable'}
 MODE: ${c.turn.mode}${c.turn.mode === 'combat' ? ' round ' + c.turn.round : ''}. Spotlight: ${E.nameOfEntry(c, E.currentEntry(c))}
 PARTY:
@@ -122,8 +132,9 @@ async function run(c, kind, x) {
   else if (kind === 'roll') task = `${cur} just made the roll you asked for (last roll in the log). Narrate the outcome — success or failure should both be interesting. ${c.turn.mode === 'combat' ? '' : `Then prompt ${next}.`}`;
   else if (kind === 'takeover') task = `You are taking over as DM. Recap the situation in 2 sentences and prompt ${cur}.`;
   else if (kind === 'npc') { const n = c.npcs[x.npc]; const ch = c.characters[x.charId]; task = `${ch?.name} says to ${n?.name}: "${x.text}". Reply IN CHARACTER as ${n?.name} (${n?.role}; ${n?.desc}) using npc_reply (1-3 sentences). Their known topics: ${JSON.stringify(n?.topics || {})}. If the hero makes a good argument, trick, or threat that should be rolled, use request_roll first instead of revealing things. Set quest_offer true if they now offer their quest. Set reveal_secret only if the hero earned it.`; }
+  else if (kind === 'xcard') task = `A player just tapped the PAUSE / SKIP card. Without asking why and without making a fuss, smoothly change the scene away from whatever was happening: a sudden distraction, a time skip, or the threat retreating. 2 gentle sentences, then give the party an easy, fun choice. Use only "narration".`;
   else task = `${x.what} Use only "narration" (and optional memory_note). Don't change game state.`;
-  const out = await call(SYSTEM, stateText(c) + lib + '\n\nTASK: ' + task, kind === 'flavor' ? 400 : 1200);
+  const out = await call(SYSTEM, stateText(c) + lib + '\n\nTASK: ' + task, kind === 'flavor' || kind === 'xcard' ? 400 : 1200);
   apply(c, out, kind, x);
 }
 
@@ -133,8 +144,9 @@ function apply(c, o, kind, x) {
   const findTok = (n) => { if (!n || !s) return null; const l = String(n).toLowerCase(); const ch = findChar(n); if (ch) return E.tokenOfChar(c, ch.id); return s.tokens.find(t => !t.gone && t.name.toLowerCase() === l) || s.tokens.find(t => !t.gone && t.name.toLowerCase().includes(l)); };
   if (kind === 'npc') { const n = c.npcs[x.npc]; if (o.npc_reply && n) E.addLog(c, 'npc', o.npc_reply, { who: n.name, npc: n.key }); if (o.quest_offer && n?.quest) E.offerQuest(c, n.quest); if (o.reveal_secret && n) { n.revealed = true; if (n.secret) E.addLog(c, 'clue', n.secret, { who: `${n.name}'s secret` }); } if (n) E.event(c, 'talk:' + n.key); }
   if (o.narration) E.addLog(c, 'narration', o.narration, { who: 'DM' });
+  if (o.rep_change && typeof o.rep_change === 'object') { const W = require('./world'); Object.entries(o.rep_change).slice(0, 3).forEach(([k, v]) => { const n = Math.max(-10, Math.min(10, parseInt(v, 10) || 0)); if (R.FACTIONS[k] && n) W.changeRep(c, k, n); }); }
   if (o.memory_note) { c.notes.push(String(o.memory_note).slice(0, 200)); if (c.notes.length > 60) c.notes.splice(0, c.notes.length - 60); }
-  if (kind === 'flavor') return;
+  if (kind === 'flavor' || kind === 'xcard') return;
   (o.hp_changes || []).forEach(h => { const t = findTok(h.target); const a = parseInt(h.amount, 10) || 0; if (!t || !a) return; if (a < 0) E.damage(c, t, -a, 'force'); else E.heal(c, t, a); E.addLog(c, 'system', `${t.name} ${a < 0 ? 'takes ' + (-a) + ' damage' : 'heals ' + a + ' HP'}.`, { fx: { k: a < 0 ? 'dmg' : 'heal', t: t.id, dmg: -a, amt: a } }); });
   (o.conditions || []).forEach(k => { const t = findTok(k.target); if (t && R.CONDITIONS[k.cond]) E.addCond(c, t, k.cond, Math.max(1, Math.min(10, parseInt(k.rounds, 10) || 1))); });
   (o.give_items || []).forEach(g => { const ch = findChar(g.character); if (!ch || !g.item) return; const key = R.ITEMS[g.item] ? g.item : null; E.invAdd(ch, key, key ? null : String(g.item).slice(0, 50)); E.addLog(c, 'loot', `🎒 ${ch.name} gets ${key ? R.ITEMS[key].name : g.item}.`); });
@@ -164,7 +176,7 @@ function apply(c, o, kind, x) {
 }
 
 async function runOutline(c) {
-  const sys = `You design D&D 5e one-shot adventures for teens (PG-13) to be played on phones. Output ONLY JSON.`;
+  const sys = `You design D&D 5e one-shot adventures for teens (PG-13, or family-friendly if asked) to be played on phones. No gore, no sexual content, no real-world hate. Output ONLY JSON.`;
   const user = `Write an adventure for this premise: "${c.premise}". Party: ${Object.values(c.characters).map(ch => `${ch.name} the ${ch.race} ${ch.class}`).join(', ')} (level 1).
 Use ONLY these monster keys: ${Object.keys(R.BESTIARY).join(', ')}. Site themes must be one of: forest, road, cave, dungeon, seacave, coastroad, causeway, cellar.
 JSON shape: {"title": string, "premise": string (2 sentences), "hook": string (3-4 vivid sentences read aloud at the start), "ending": string (3 sentences for when they win), "questTitle": string,
@@ -187,4 +199,4 @@ JSON: {"name": "The X of Y" (the dungeon's name), "theme": "forest"|"cave"|"dung
   OPS.addNextAdventure(c, lvl, c.startScene, o);
 }
 
-module.exports = { setHooks, queue, active, enabled, clearLibCache, MODEL };
+module.exports = { stateText, setHooks, queue, active, enabled, clearLibCache, MODEL };

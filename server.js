@@ -13,7 +13,7 @@ const { viewFor } = require('./server/view');
 
 const PORT = process.env.PORT || 8080;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-fs.mkdirSync(path.join(DATA_DIR, 'library'), { recursive: true });
+fs.mkdirSync(path.join(DATA_DIR, 'library'), { recursive: true }); fs.mkdirSync(path.join(DATA_DIR, 'music'), { recursive: true });
 
 // ---------- storage ----------
 const DB_FILE = path.join(DATA_DIR, 'db.json');
@@ -48,7 +48,7 @@ function notifyTurn(c) {
 function notifyDM(c, msg) { if (AI.active(c)) return; pushUser(c.dmUserId || c.ownerId, { title: `📜 ${c.name}: DM needed`, body: msg, url: `/?c=${c.id}`, tag: 'dm-' + c.id }, c); }
 const userName = (id) => db.users[id]?.name || '?';
 function membersOf(c) { return c.members.map(id => ({ id, name: userName(id), online: [...sockets.values()].some(s => s.userId === id && s.campaignId === c.id), visible: userVisibleIn(id, c.id), push: !!(db.users[id]?.pushSubs?.length) })); }
-function ctxFor(c, u) { return { isDM: OPS.isDM(c, u), aiActive: AI.active(c), aiReady: AI.enabled(), members: membersOf(c) }; }
+function ctxFor(c, u) { return { isDM: OPS.isDM(c, u), aiActive: AI.active(c), aiReady: AI.enabled(), members: membersOf(c), music: db.users[c.ownerId]?.music || {} }; }
 function broadcast(c) { for (const [ws, s] of sockets) if (s.campaignId === c.id && ws.readyState === 1) { const u = db.users[s.userId]; if (u) ws.send(JSON.stringify({ t: 'campaign', campaign: viewFor(c, u, ctxFor(c, u)) })); } }
 function changed(c) { save(); broadcast(c); }
 
@@ -68,13 +68,52 @@ app.post('/api/register', (req, res) => {
   const name = String(req.body.name || '').trim().slice(0, 24); const pass = String(req.body.pass || '');
   if (name.length < 2) return bad(res, 'Pick a name (2+ letters)'); if (pass.length < 4) return bad(res, 'Password needs 4+ characters');
   if (Object.values(db.users).some(u => u.name.toLowerCase() === name.toLowerCase())) return bad(res, 'That name is taken');
-  const salt = uid(8); const u = { id: uid(6), name, salt, pass: hashPass(pass, salt), pushSubs: [], createdAt: now() }; db.users[u.id] = u;
-  const token = uid(16); db.sessions[token] = u.id; save(); res.json({ token, user: { id: u.id, name } });
+  const salt = uid(8); const code = recoveryCode(); const u = { id: uid(6), name, salt, pass: hashPass(pass, salt), rec: hashPass(code, salt), pushSubs: [], createdAt: now() }; db.users[u.id] = u;
+  const token = uid(16); db.sessions[token] = u.id; save(); res.json({ token, user: { id: u.id, name }, recovery: code });
 });
 app.post('/api/login', (req, res) => {
   const name = String(req.body.name || '').trim().toLowerCase(); const u = Object.values(db.users).find(x => x.name.toLowerCase() === name);
+  if (slow('login:' + name + ':' + req.ip)) return bad(res, 'Too many tries — wait 15 minutes', 429);
   if (!u || hashPass(req.body.pass || '', u.salt) !== u.pass) return bad(res, 'Wrong name or password');
   const token = uid(16); db.sessions[token] = u.id; save(); res.json({ token, user: { id: u.id, name: u.name } });
+});
+function recoveryCode() { const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 12; i++) { s += A[crypto.randomInt(A.length)]; if (i === 3 || i === 7) s += '-'; } return s; }
+const tries = new Map(); const slow = (key) => { const t = tries.get(key) || { n: 0, at: now() }; if (now() - t.at > 15 * 60 * 1000) { t.n = 0; t.at = now(); } t.n++; tries.set(key, t); return t.n > 8; };
+// ---------- custom music: each user's own tracks per mood, used in every campaign they create ----------
+const MOODS = ['town', 'explore', 'dungeon', 'combat', 'boss'];
+const AUDIO_EXT = { 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/wave': 'wav', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/aac': 'aac', 'audio/webm': 'webm', 'audio/flac': 'flac' };
+app.use('/music', express.static(path.join(DATA_DIR, 'music'), { maxAge: '30d', immutable: true }));
+app.get('/api/music', auth, (req, res) => res.json({ music: req.user.music || {}, moods: MOODS }));
+app.post('/api/music/:mood', auth, express.raw({ type: 'audio/*', limit: '40mb' }), (req, res) => {
+  const mood = req.params.mood; if (!MOODS.includes(mood)) return bad(res, 'Unknown mood');
+  const ext = AUDIO_EXT[(req.headers['content-type'] || '').split(';')[0].toLowerCase()]; if (!ext) return bad(res, 'Use an MP3, WAV, OGG, M4A or FLAC file');
+  if (!Buffer.isBuffer(req.body) || req.body.length < 1000) return bad(res, 'That file looks empty');
+  const u = req.user; u.music = u.music || {};
+  if (u.music[mood]) { try { fs.unlinkSync(path.join(DATA_DIR, 'music', path.basename(u.music[mood]))); } catch (e) { } }
+  const name = `${u.id}_${mood}_${crypto.randomBytes(6).toString('hex')}.${ext}`; fs.writeFileSync(path.join(DATA_DIR, 'music', name), req.body);
+  u.music[mood] = '/music/' + name; save(); Object.values(db.campaigns).filter(c => c.ownerId === u.id).forEach(c => broadcast(c)); res.json({ ok: true, music: u.music });
+});
+app.delete('/api/music/:mood', auth, (req, res) => { const u = req.user; if (u.music && u.music[req.params.mood]) { try { fs.unlinkSync(path.join(DATA_DIR, 'music', path.basename(u.music[req.params.mood]))); } catch (e) { } delete u.music[req.params.mood]; save(); Object.values(db.campaigns).filter(c => c.ownerId === u.id).forEach(c => broadcast(c)); } res.json({ ok: true, music: u.music || {} }); });
+app.post('/api/password', auth, (req, res) => {
+  const u = req.user; if (hashPass(req.body.old || '', u.salt) !== u.pass) return bad(res, 'Your current password is wrong');
+  const p = String(req.body.pass || ''); if (p.length < 4) return bad(res, 'New password needs 4+ characters');
+  u.pass = hashPass(p, u.salt); Object.keys(db.sessions).forEach(t => { if (db.sessions[t] === u.id && t !== (req.headers.authorization || '').replace('Bearer ', '')) delete db.sessions[t]; }); save(); res.json({ ok: true });
+});
+app.post('/api/recovery', auth, (req, res) => { const u = req.user; const code = recoveryCode(); u.rec = hashPass(code, u.salt); save(); res.json({ recovery: code }); });
+app.post('/api/reset', (req, res) => {
+  const name = String(req.body.name || '').trim().toLowerCase(); if (slow('reset:' + name + ':' + req.ip)) return bad(res, 'Too many tries — wait 15 minutes', 429);
+  const u = Object.values(db.users).find(x => x.name.toLowerCase() === name); const code = String(req.body.code || '').trim().toUpperCase();
+  if (!u || !u.rec || hashPass(code, u.salt) !== u.rec) return bad(res, 'That name and recovery code don\'t match');
+  const p = String(req.body.pass || ''); if (p.length < 4) return bad(res, 'New password needs 4+ characters');
+  u.pass = hashPass(p, u.salt); const nc = recoveryCode(); u.rec = hashPass(nc, u.salt); Object.keys(db.sessions).forEach(t => { if (db.sessions[t] === u.id) delete db.sessions[t]; });
+  const token = uid(16); db.sessions[token] = u.id; save(); res.json({ token, user: { id: u.id, name: u.name }, recovery: nc });
+});
+// full story + chat log for the campaign creator (parent view)
+app.get('/api/c/:id/log.txt', auth, (req, res) => {
+  const c = db.campaigns[req.params.id]; if (!c || !c.members.includes(req.user.id)) return bad(res, 'Not found', 404);
+  if (c.ownerId !== req.user.id) return bad(res, 'Only the campaign creator can download the full log', 403);
+  const lines = c.log.filter(e => e.kind !== 'move' && e.text).map(e => `[${new Date(e.t).toISOString().replace('T', ' ').slice(0, 16)}] ${e.kind.toUpperCase()}${e.who ? ' · ' + e.who : ''}${e.uid ? ' (' + (db.users[e.uid]?.name || '?') + ')' : ''}: ${e.text}`);
+  res.setHeader('content-type', 'text/plain; charset=utf-8'); res.setHeader('content-disposition', `attachment; filename="${c.name.replace(/[^a-z0-9]+/gi, '_')}_log.txt"`); res.send(lines.join('\n'));
 });
 app.get('/api/me', auth, (req, res) => {
   const u = req.user;

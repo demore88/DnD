@@ -1,6 +1,6 @@
 // Roll Call service worker: turn alerts + light offline shell
-const SHELL = 'rollcall-v6';
-self.addEventListener('install', (e) => { e.waitUntil(caches.open(SHELL).then(c => c.addAll(['/', '/style.css', '/app.js', '/rules.js', '/bestiary2.js', '/art.js', '/board.js', '/manifest.json', '/icons/icon-192.png']).catch(() => {}))); self.skipWaiting(); });
+const SHELL = 'rollcall-v7';
+self.addEventListener('install', (e) => { e.waitUntil(caches.open(SHELL).then(c => c.addAll(['/', '/style.css', '/app.js', '/rules.js', '/bestiary2.js', '/growth.js', '/sound.js', '/scenes.js', '/art.js', '/board.js', '/manifest.json', '/icons/icon-192.png']).catch(() => {}))); self.skipWaiting(); });
 self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== SHELL).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', (e) => {
   const u = new URL(e.request.url);

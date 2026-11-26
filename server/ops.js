@@ -2,6 +2,8 @@
 const R = require('../public/rules.js');
 const E = require('./engine');
 const ADV = require('./adventure');
+const WORLD = require('./world');
+const SAFE = require('./safety');
 const { cheb } = E;
 
 let H = { queueAI() { }, aiActive() { return false; }, notifyUser() { }, notifyDM() { }, userName() { return '?'; } };
@@ -24,6 +26,7 @@ function spend(c, cost) { if (c.turn.mode !== 'combat' || !c.turn.res) return; i
 function afterCombatAction(c) { E.checkCombatEnd(c); }
 
 function handle(c, u, op, b) {
+  if (c.status === 'active' && !c.world) WORLD.setup(c);
   const dm = isDM(c, u);
   const ch = Object.values(c.characters).find(x => x.ownerId === u.id);
   const s = E.scene(c);
@@ -36,10 +39,12 @@ function handle(c, u, op, b) {
     // ----- setup -----
     case 'character': {
       if (ch && !b.edit) return { error: 'You already have a hero here' };
-      if (ch && b.edit) { if (b.name) ch.name = String(b.name).slice(0, 24); if (b.backstory != null) ch.backstory = String(b.backstory).slice(0, 500); if (b.look) Object.assign(ch.look, E.cleanLook(b.look)); if (t) t.name = ch.name; return { ok: true }; }
+      if (ch && b.edit) { if (b.name) ch.name = String(b.name).slice(0, 24); if (b.backstory != null) { ch.backstory = String(b.backstory).slice(0, 500); if (c.status === 'active' && ch.backstory.trim().length > 8) WORLD.personalQuest(c, ch, WH); } if (b.look) Object.assign(ch.look, E.cleanLook(b.look)); if (t) t.name = ch.name; return { ok: true }; }
       if (Object.keys(c.characters).length >= 6) return { error: 'The party is full (6 heroes max)' };
+      if (b.name) b.name = SAFE.clean(c, b.name); if (b.backstory) b.backstory = SAFE.clean(c, b.backstory);
       const nc = E.buildCharacter(u, b); c.characters[nc.id] = nc;
       E.addLog(c, 'system', `🧙 ${nc.name} the ${nc.race} ${nc.class} joins the party!`, { fx: { k: 'join' } });
+      if (c.status === 'active' && (nc.backstory || '').trim().length > 8) WORLD.personalQuest(c, nc, WH);
       if (c.status === 'active' && s) { const [x, y] = E.freeSpotNear(s, s.entry[0], s.entry[1]); s.tokens.push({ id: E.uid(4), kind: 'pc', charId: nc.id, name: nc.name, x, y, conds: [] }); E.updateVision(c); if (inCombat) c.turn.order.push({ kind: 'pc', charId: nc.id, init: 0 }); else E.buildExploreOrder(c); }
       return { ok: true };
     }
@@ -105,7 +110,7 @@ function handle(c, u, op, b) {
       const range = w.range || (ch.features.includes('long_limbed') && !w.ranged ? 2 : 1); if (cheb(t, tgt) > range) return { error: `${tgt.name} is out of reach${range === 1 ? ' — move next to it' : ` (range ${range})`}` };
       if (b.reckless && ch.features.includes('reckless_attack') && !c.turn.res.attacked) { E.addCond(c, t, 'reckless', 1); }
       c.turn.res.attacksLeft--; c.turn.res.attacked = true; if (w.light && !w.ranged) c.turn.res.lightUsed = true;
-      E.pcAttack(c, ch, t, tgt, w, { smite: !!b.smite, adv: b.reckless && ch.features.includes('reckless_attack') ? 'adv' : null });
+      E.pcAttack(c, ch, t, tgt, w, { smite: !!b.smite, trip: !!b.trip, adv: b.reckless && ch.features.includes('reckless_attack') ? 'adv' : null });
       afterCombatAction(c); return { ok: true };
     }
     case 'cast': {
@@ -121,6 +126,18 @@ function handle(c, u, op, b) {
       const usesMax = E.featureUses(ch, k); if (usesMax != null && (ch.uses[k] || 0) >= usesMax) return { error: `No uses of ${F.name} left — rest to recover` };
       const cost = F.kind === 'free' ? 'free' : F.kind; const err = needTurn(c, ch, cost); if (err) return { error: err };
       const use = () => { ch.uses[k] = (ch.uses[k] || 0) + 1; };
+      if (k === 'wild_shape') {
+        if (E.hasCond(c, t, 'wildshaped')) { E.removeCond(c, t, 'wildshaped'); ch.temp = 0; E.addLog(c, 'feature', `🌿 ${ch.name} shifts back into their own shape.`, { who: ch.name }); return { ok: true }; }
+        const moon = ch.features.includes('moon_form'); const cost2 = moon ? 'bonus' : 'action'; const e2 = needTurn(c, ch, cost2); if (e2 && inCombat) return { error: e2 };
+        use(); if (inCombat) spend(c, cost2); E.dropConc(c, ch, 'switch'); E.addCond(c, t, 'wildshaped', 100, t.id); const tmp = ch.level * (moon ? 6 : 3) + 8; ch.temp = Math.max(ch.temp || 0, tmp);
+        E.addLog(c, 'feature', `🐻 ${ch.name} drops to all fours and becomes a great bear! (+${tmp} temp HP, claws ${moon ? '2d8' : '2d6'})`, { who: ch.name, fx: { k: 'buff', t: t.id, name: 'Wild Shape' } }); return { ok: true };
+      }
+      if (k === 'radiance_of_dawn') { use(); spend(c, 'action'); const foes = E.activeMonsters(c).filter(m => cheb(m, t) <= 3); const dc = 8 + R.prof(ch.level) + R.mod(ch.scores.wis); E.addLog(c, 'feature', `🌅 ${ch.name} unleashes the Radiance of Dawn!`, { who: ch.name, fx: { k: 'blast', x: t.x, y: t.y, r: 3, from: t.id, type: 'radiant' } }); foes.forEach(m => { let d = E.rollDice('2d10').total + ch.level; if (E.d20().pick + 1 >= dc) d = Math.floor(d / 2); E.damage(c, m, d, 'radiant', { magic: true, attacker: t }); }); afterCombatAction(c); return { ok: true }; }
+      if (k === 'sacred_weapon') { use(); spend(c, 'action'); E.addCond(c, t, 'sacred', 10, t.id); E.addLog(c, 'feature', `🌟 ${ch.name}'s weapon blazes with holy light! (+${Math.max(1, R.mod(ch.scores.cha))} to hit)`, { who: ch.name, fx: { k: 'buff', t: t.id, name: 'Sacred Weapon' } }); return { ok: true }; }
+      if (k === 'vow_of_enmity') { const tg = tokenById(b.targetId); if (!tg || tg.kind !== 'monster' || cheb(t, tg) > 2) return { error: 'Pick an enemy within 2 squares' }; use(); spend(c, 'bonus'); E.addCond(c, tg, 'vowed', 10, t.id); E.addLog(c, 'feature', `🎯 ${ch.name} swears a Vow of Enmity against ${tg.name}!`, { who: ch.name, fx: { k: 'buff', t: t.id, name: 'Vow' } }); return { ok: true }; }
+      if (k === 'fey_presence') { use(); spend(c, 'action'); const dc = 8 + R.prof(ch.level) + R.mod(ch.scores.cha); const hit = []; E.activeMonsters(c).filter(m => cheb(m, t) <= 2).forEach(m => { if (E.d20().pick + 1 < dc) { E.addCond(c, m, E.rnd(2) ? 'charmed' : 'frightened', 1, t.id); hit.push(m.name); } }); E.addLog(c, 'feature', `🧚 ${ch.name} shimmers with Fey Presence${hit.length ? ' — ' + hit.join(', ') + ' falter!' : ', but nobody falters.'}`, { who: ch.name, fx: { k: 'blast', x: t.x, y: t.y, r: 2, from: t.id, type: 'psychic' } }); return { ok: true }; }
+      if (k === 'natures_veil') { use(); spend(c, 'bonus'); E.addCond(c, t, 'hidden', 2, t.id); E.addLog(c, 'feature', `🍃 ${ch.name} vanishes behind Nature's Veil.`, { who: ch.name }); return { ok: true }; }
+      if (k === 'shadow_step') { if (!ch.ki || ch.ki.used >= ch.ki.max) return { error: 'No ki left' }; const x = parseInt(b.x, 10), y = parseInt(b.y, 10); if (isNaN(x) || cheb(t, { x, y }) > 12 || !E.walkable(s, x, y) || E.occupied(s, x, y, t.id)) return { error: 'Pick an open square within 12' }; ch.ki.used++; spend(c, 'bonus'); t.x = x; t.y = y; E.addCond(c, t, 'hidden', 1, t.id); E.updateVision(c); E.addLog(c, 'feature', `🌑 ${ch.name} steps into one shadow and out of another!`, { who: ch.name, fx: { k: 'move', t: t.id, path: [[x, y]] } }); return { ok: true }; }
       if (k === 'feline_agility') { if (!inCombat) return { error: 'Save it for a fight — out of combat you can already run anywhere' }; use(); spend(c, 'bonus'); c.turn.res.move += Math.floor(ch.speed / 5); E.addLog(c, 'feature', `🐈 ${ch.name} bursts into a blur of Feline Agility — double speed!`, { who: ch.name, fx: { k: 'buff', t: t.id, name: 'Feline Agility' } }); return { ok: true }; }
       if (k === 'healing_hands') { const tg = tokenById(b.targetId) || t; const tch = tg && E.charOfToken(c, tg); if (!tch || cheb(t, tg) > 1) return { error: 'Touch an ally (stand next to them)' }; if (tch.dead) return { error: 'Too late for healing hands — try the temple' }; use(); spend(c, 'action'); const h = E.heal(c, tg, E.rollDice(`${ch.level}d4`).total); E.addLog(c, 'feature', `😇 Light pours from ${ch.name}'s hands into ${tch.name}: +${h} HP`, { who: ch.name, fx: { k: 'heal', t: tg.id, amt: h } }); return { ok: true }; }
       if (k === 'shell_defense') { if (!inCombat) return { error: 'Only needed in combat' }; spend(c, 'action'); E.addCond(c, t, 'shelled', 1); E.addLog(c, 'feature', `🐢 ${ch.name} pulls into their shell! (+4 AC until their next turn)`, { who: ch.name, fx: { k: 'buff', t: t.id, name: 'Shell' } }); return { ok: true }; }
@@ -142,9 +159,23 @@ function handle(c, u, op, b) {
       return { error: `${F.name} works automatically` };
     }
     case 'basic': {
-      const k = b.kind; const bonusOk = ch && b.bonus && (((ch.features.includes('cunning_action') || ch.features.includes('nimble_escape')) && ['dash', 'hide'].includes(k)) || (ch.features.includes('aggressive') && k === 'dash'));
+      const k = b.kind; const bonusOk = ch && b.bonus && (((ch.features.includes('cunning_action') || ch.features.includes('nimble_escape')) && ['dash', 'hide', 'disengage'].includes(k)) || (k === 'shove' && ch.features.includes('feat_shield_master') && ch.equip.shield) || (k === 'shove' && false) || (ch.features.includes('aggressive') && k === 'dash'));
       const cost = bonusOk ? 'bonus' : 'action'; const err = needTurn(c, ch, cost); if (err) return { error: err };
       if (k === 'dash') { if (!inCombat) return { error: 'Only needed in combat' }; spend(c, cost); c.turn.res.move += Math.floor(ch.speed / 5); E.addLog(c, 'system', `🏃 ${ch.name} dashes!`); return { ok: true }; }
+      if (k === 'disengage') { if (!inCombat) return { error: 'Only needed in combat' }; spend(c, cost); E.addCond(c, t, 'disengaged', 1, t.id); E.addLog(c, 'system', `↩️ ${ch.name} disengages — they can back away safely this turn.`); return { ok: true }; }
+      if (k === 'shove' || k === 'grapple') {
+        const tg = tokenById(b.targetId); if (!tg || tg.kind !== 'monster' || cheb(t, tg) > 1) return { error: 'Stand next to an enemy' };
+        if ((R.BESTIARY[tg.mkey]?.size || 1) >= 3) return { error: `${tg.name} is far too big` };
+        if (k === 'grapple' && ch.weapons.filter(w => !w.ranged).length > 1 && ch.equip.shield) return { error: 'You need a free hand' };
+        if (!inCombat) { E.startCombat(c); return { ok: true, note: 'Combat! Try again on your turn.' }; }
+        if (!bonusOk) { if (c.turn.res.attacksLeft <= 0) { if (!c.turn.res.action) return { error: 'No action left' }; c.turn.res.action = 0; c.turn.res.attacksLeft = E.attacksPerAction(ch); } c.turn.res.attacksLeft--; } else spend(c, 'bonus');
+        const me = E.d20().pick + Math.max(E.skillMod(ch, 'athletics'), k === 'shove' ? -9 : E.skillMod(ch, 'athletics')); const them = E.d20().pick + E.monsterSave(tg, ch.scores.dex > ch.scores.str ? 'dex' : 'str') + 1;
+        if (me <= them) { E.addLog(c, 'roll', `🤼 ${ch.name} tries to ${k} ${tg.name}: ${me} vs ${them} — it shrugs them off!`, { who: ch.name }); afterCombatAction(c); return { ok: true }; }
+        if (k === 'grapple') { E.addCond(c, tg, 'grappled', 10, t.id); E.addLog(c, 'roll', `🤼 ${ch.name} grabs ${tg.name}: ${me} vs ${them} — it's GRAPPLED and can't move!`, { who: ch.name, fx: { k: 'buff', t: tg.id, name: 'Grappled' } }); }
+        else if (b.mode === 'push') { let moved = 0; for (let i = 0; i < 1; i++) { const nx = tg.x + Math.sign(tg.x - t.x), ny = tg.y + Math.sign(tg.y - t.y); if (E.walkable(s, nx, ny) && !E.occupied(s, nx, ny, tg.id)) { tg.x = nx; tg.y = ny; moved++; } } E.addLog(c, 'roll', `💥 ${ch.name} shoves ${tg.name}: ${me} vs ${them} — ${moved ? 'it stumbles back!' : "it's pinned against something!"}`, { who: ch.name, fx: { k: 'move', t: tg.id, path: [[tg.x, tg.y]] } }); }
+        else { E.addCond(c, tg, 'prone', 1, t.id); E.addLog(c, 'roll', `💥 ${ch.name} shoves ${tg.name}: ${me} vs ${them} — it crashes to the ground, PRONE!`, { who: ch.name }); }
+        afterCombatAction(c); return { ok: true };
+      }
       if (k === 'dodge') { spend(c, cost); E.addCond(c, t, 'dodging', 1); E.addLog(c, 'system', `💨 ${ch.name} takes the Dodge action — attacks against them have disadvantage.`); return { ok: true }; }
       if (k === 'hide') { spend(c, cost); const r = E.rollCheck(c, ch, t, 'stealth', 'Hide', null); const seen = E.activeMonsters(c).some(m => 10 + 1 >= r.total + 0 && cheb(m, t) <= 2); if (r.total >= 12 && !seen) { E.addCond(c, t, 'hidden', 2); E.addLog(c, 'system', `🫥 ${ch.name} slips out of sight. Next attack has advantage!`); } else E.addLog(c, 'system', `${ch.name} can't find a good hiding spot.`); return { ok: true }; }
       if (k === 'help') { const tg = tokenById(b.targetId); if (!tg || tg.kind !== 'pc' || tg === t || cheb(t, tg) > 1) return { error: 'Stand next to an ally to help them' }; spend(c, cost); E.addCond(c, tg, 'helped', 2); E.addLog(c, 'system', `🤝 ${ch.name} helps ${tg.name} — advantage on their next attack or check.`); return { ok: true }; }
@@ -235,14 +266,14 @@ function handle(c, u, op, b) {
     }
     case 'say': {
       const n = c.npcs[b.npcKey]; if (!n || !ch) return { error: 'Nobody to talk to' };
-      const text = String(b.text || '').trim().slice(0, 400); if (!text) return { error: 'Say something' };
+      const text = SAFE.clean(c, String(b.text || '').trim().slice(0, 400)); if (!text) return { error: 'Say something' };
       n.met = true; E.addLog(c, 'say', text, { who: ch.name, uid: u.id, to: n.name });
       if (H.aiActive(c)) H.queueAI(c, 'npc', { npc: n.key, charId: ch.id, text });
       else { H.notifyDM(c, `${ch.name} says to ${n.name}: "${text.slice(0, 80)}"`); }
       return { ok: true };
     }
     case 'do': {
-      const text = String(b.text || '').trim().slice(0, 1200); if (!text) return { error: 'Say what you do' };
+      const text = SAFE.clean(c, String(b.text || '').trim().slice(0, 1200)); if (!text) return { error: 'Say what you do' };
       if (!ch) return { error: 'Make a hero first' };
       if (!myTurn) return { error: inCombat ? 'Wait for your turn' : `It's ${E.nameOfEntry(c, E.currentEntry(c))}'s spotlight — use chat, or move and explore freely` };
       if (c.turn.phase !== 'act') return { error: c.turn.phase === 'roll' ? 'Roll the dice first!' : 'Waiting on the DM' };
@@ -252,12 +283,26 @@ function handle(c, u, op, b) {
       if (H.aiActive(c)) H.queueAI(c, 'action'); else H.notifyDM(c, `${ch.name}: ${text.slice(0, 100)}`);
       return { ok: true };
     }
-    case 'chat': { const text = String(b.text || '').trim().slice(0, 600); if (!text) return { error: 'Empty' }; E.addLog(c, 'chat', text, { who: ch ? ch.name : (dm ? 'DM' : H.userName(u.id)), uid: u.id }); return { ok: true }; }
+    case 'xcard': {
+      c.safety = c.safety || SAFE.defaults(); c.safety.paused = Date.now();
+      E.addLog(c, 'alert', '🛑 Someone tapped PAUSE. No questions asked — the story moves somewhere else.', { fx: { k: 'xcard' } });
+      if (H.aiActive(c)) {
+        if (inCombat) { E.activeMonsters(c).forEach(m => { m.gone = true; }); const sc = E.scene(c); sc.tokens = sc.tokens.filter(t => !t.gone); c.turn.xpPool = Math.floor((c.turn.xpPool || 0) / 2); E.endCombat(c); }
+        H.queueAI(c, 'xcard');
+      } else H.notifyDM(c, '🛑 A player tapped PAUSE — please steer the scene somewhere gentler.');
+      return { ok: true };
+    }
+    case 'safety': {
+      if (c.ownerId !== u.id) return { error: 'Only the campaign creator can change safety settings' };
+      c.safety = Object.assign(c.safety || SAFE.defaults(), SAFE.defaults(Object.assign({}, c.safety || {}, b))); E.addLog(c, 'system', `🛡️ Table settings updated: ${c.safety.level === 'family' ? '👪 Family-friendly' : '🧑 Teen (PG-13)'} story${c.safety.filter ? ', chat filter on' : ''}${c.safety.lines.length ? `, avoiding ${c.safety.lines.length} topic${c.safety.lines.length > 1 ? 's' : ''}` : ''}.`);
+      return { ok: true };
+    }
+    case 'chat': { const text = SAFE.clean(c, String(b.text || '').trim().slice(0, 600)); if (!text) return { error: 'Empty' }; E.addLog(c, 'chat', text, { who: ch ? ch.name : (dm ? 'DM' : H.userName(u.id)), uid: u.id }); return { ok: true }; }
     case 'buy': {
       const n = c.npcs[b.npcKey]; if (!n || !n.shop || !ch) return { error: 'No shop' }; if (!s.tokens.some(o => o.npcKey === n.key)) return { error: `${n.name} isn't here` };
       const I = R.ITEMS[b.item]; if (!I || !n.shop.includes(b.item)) return { error: 'They don\'t sell that' };
-      if (ch.gold < I.price) return { error: 'Not enough gold' };
-      ch.gold -= I.price; E.invAdd(ch, b.item); E.addLog(c, 'loot', `🛒 ${ch.name} buys ${I.name} for ${I.price} gold.`, { who: ch.name }); return { ok: true };
+      const price = Math.max(1, Math.ceil(I.price * WORLD.priceMult(c))); if (ch.gold < price) return { error: `Not enough gold (${price} gp)` };
+      ch.gold -= price; E.invAdd(ch, b.item); E.addLog(c, 'loot', `🛒 ${ch.name} buys ${I.name} for ${price} gold.`, { who: ch.name }); return { ok: true };
     }
     case 'sell': {
       const it = ch && ch.inventory[parseInt(b.idx, 10)]; const I = it && R.ITEMS[it.k]; if (!I || !I.price || I.story) return { error: 'Nobody wants to buy that' };
@@ -273,6 +318,34 @@ function handle(c, u, op, b) {
       E.invAdd(to, it.k, it.n, 1); E.invRemove(ch, idx, 1); E.addLog(c, 'system', `🤲 ${ch.name} gives ${it.n} to ${to.name}.`); return { ok: true };
     }
     case 'givegold': { if (!ch) return { error: 'no hero' }; const to = c.characters[b.toCharId]; const amt = Math.min(ch.gold, Math.max(0, parseInt(b.amount, 10) || 0)); if (!to || !amt) return { error: 'Nothing to give' }; ch.gold -= amt; to.gold += amt; E.addLog(c, 'system', `💰 ${ch.name} gives ${amt} gold to ${to.name}.`); return { ok: true }; }
+    case 'worldtravel': { if (!ch) return { error: 'no hero' }; if (c.turn.mode === 'combat') return { error: "You can't travel in the middle of a fight!" }; if (!dm && E.currentUserId(c) !== u.id && c.pace === 'live') return { error: 'Wait for the spotlight' }; const r = WORLD.travel(c, b.to, WH); return r; }
+    case 'choose': {
+      if (!ch) return { error: 'no hero' }; const q = (ch.choices || [])[0]; if (!q) return { error: 'Nothing to choose' };
+      if (q.t === 'subclass') { const S = R.SUBCLASSES[ch.class]?.[b.pick]; if (!S) return { error: 'Pick a path' }; ch.subclass = b.pick; E.refreshClass(ch); if (ch.features.includes('draconic_resilience')) { ch.maxHp += ch.level; ch.hp += ch.level; } E.placePets(c, ch); E.addLog(c, 'levelup', `${S.icon} ${ch.name} follows the ${S.name}!`, { who: ch.name, fx: { k: 'levelup', charId: ch.id } }); }
+      else if (q.t === 'asi') {
+        if (b.feat) { if (!R.FEATURES[b.feat]?.feat || (ch.feats || []).includes(b.feat)) return { error: 'Pick a feat you don\'t have' }; ch.feats = (ch.feats || []).concat(b.feat);
+          const bump = (a) => { if (ch.scores[a] < 20) { ch.scores[a]++; ch.base[a]++; } };
+          if (b.feat === 'feat_tough') { ch.maxHp += 2 * ch.level; ch.hp += 2 * ch.level; } if (b.feat === 'feat_mobile') ch.speed += 10; if (b.feat === 'feat_resilient' || b.feat === 'feat_durable') bump('con'); if (b.feat === 'feat_observant') bump('wis');
+          E.addLog(c, 'levelup', `🎖️ ${ch.name} gains the ${R.FEATURES[b.feat].name} feat!`, { who: ch.name }); }
+        else { const picks = Array.isArray(b.stats) ? b.stats.filter(a => R.ABILITIES.includes(a)).slice(0, 2) : []; if (!picks.length) return { error: 'Pick abilities to raise' }; const plan = picks.length === 1 ? [picks[0], picks[0]] : picks; const oldCon = R.mod(ch.scores.con);
+          plan.forEach(a => { if (ch.scores[a] < 20) { ch.scores[a]++; ch.base[a]++; } }); const dc = R.mod(ch.scores.con) - oldCon; if (dc > 0) { ch.maxHp += dc * ch.level; ch.hp += dc * ch.level; }
+          E.addLog(c, 'levelup', `💪 ${ch.name} grows stronger: ${plan.map(a => a.toUpperCase() + ' +1').join(', ')}`, { who: ch.name }); }
+        E.refreshClass(ch);
+      } else if (q.t === 'spells') {
+        const pool = R.classSpells(ch.class, ch.level).filter(k => R.SPELLS[k].lvl > 0 && !(ch.known || []).includes(k)); const picks = (Array.isArray(b.spells) ? b.spells : []).filter(k => pool.includes(k)).slice(0, q.n);
+        if (picks.length < Math.min(q.n, pool.length)) return { error: `Pick ${q.n} spell${q.n > 1 ? 's' : ''}` }; ch.known = (ch.known || []).concat(picks); E.refreshClass(ch);
+        E.addLog(c, 'levelup', `📖 ${ch.name} learns ${picks.map(k => R.SPELLS[k].name).join(', ')}`, { who: ch.name });
+      }
+      ch.choices.shift(); return { ok: true };
+    }
+    case 'buypet': {
+      if (!ch) return { error: 'no hero' }; const P = R.COMPANIONS[b.key]; if (!P || P.kind === 'companion') return { error: 'Not for sale' };
+      if (P.kind === 'familiar' && !['Wizard', 'Warlock', 'Sorcerer'].includes(ch.class) && !(ch.feats || []).includes('feat_magic_initiate')) return { error: 'Only spellcasters can bond with a familiar' };
+      ch.pets = ch.pets || []; if (ch.pets.some(p => p.key === b.key)) return { error: 'You already have one' }; if (ch.pets.filter(p => p.key !== 'wolf').length >= 2) return { error: 'Two animal friends is plenty!' };
+      const price = Math.ceil(P.price * WORLD.priceMult(c)); if (ch.gold < price) return { error: `That costs ${price} gold` };
+      ch.gold -= price; ch.pets.push(E.newPet(b.key, ch)); E.placePets(c, ch); E.addLog(c, 'loot', `${P.icon} ${ch.name} ${P.kind === 'familiar' ? 'calls a familiar' : 'adopts a ' + P.name.toLowerCase()}${price ? ` for ${price} gold` : ''}! Say hello!`, { who: ch.name }); return { ok: true };
+    }
+    case 'renamepet': { const p = ch && (ch.pets || []).find(x => x.key === b.key); if (!p) return { error: 'No such pet' }; p.name = String(b.name || p.name).replace(/[<>]/g, '').slice(0, 20); const tk = s && s.tokens.find(o => o.kind === 'ally' && o.ownerId === ch.id && o.petKey === b.key); if (tk) tk.name = p.name; return { ok: true }; }
     case 'levelup': { if (!ch) return { error: 'no hero' }; const r = E.levelUp(c, ch); if (!r) return { error: 'Not enough XP yet' }; return { ok: true, levelup: r }; }
     case 'rest': {
       if (inCombat) return { error: 'You can\'t rest in a fight!' };
@@ -297,9 +370,9 @@ function handle(c, u, op, b) {
       if (!process.env.TEST_OPS) return { error: 'no' };
       if (inCombat) return { ok: true, combat: true };
       let best = null, bd = 1e9; const st = E.scene(c);
-      for (let y = 0; y < st.h; y++) for (let x = 0; x < st.w; x++) { if (st.seen[y * st.w + x] !== '1' || !E.walkable(st, x, y)) continue; const fr = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => st.seen[(y + dy) * st.w + x + dx] === '0'); if (!fr) continue; const p = E.pathTo(c, st, t, x, y, 80); if (p && p.cost > 0 && p.cost < bd) { bd = p.cost; best = p; } }
+      for (let y = 0; y < st.h; y++) for (let x = 0; x < st.w; x++) { if (st.seen[y * st.w + x] !== '1' || !E.walkable(st, x, y)) continue; const fr = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => st.seen[(y + dy) * st.w + x + dx] === '0'); if (!fr) continue; c._dbgTried = c._dbgTried || {}; if (c._dbgTried[st.key + ':' + x + ',' + y]) continue; const p = E.pathTo(c, st, t, x, y, 80); if (p && p.cost > 0 && p.cost < bd) { bd = p.cost; best = p; } }
       if (!best) { const dorm = st.tokens.find(m => m.kind === 'monster' && !m.gone && !m.disguise); if (dorm) { let b2 = null; for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) { const p = E.pathTo(c, st, t, dorm.x + dx, dorm.y + dy, 80); if (p && (!b2 || p.cost < b2.cost)) b2 = p; } if (b2) { E.walk(c, t, b2.path); return { ok: true, moved: true }; } } return { ok: true, done: true }; }
-      E.walk(c, t, best.path); return { ok: true, moved: true, combat: c.turn.mode === 'combat' };
+      const seen0 = st.seen.split('1').length; const goal = best.path[best.path.length - 1]; E.walk(c, t, best.path); if (st.seen.split('1').length === seen0 && t.x === goal[0] && t.y === goal[1]) c._dbgTried[st.key + ':' + goal[0] + ',' + goal[1]] = 1; return { ok: true, moved: true, combat: c.turn.mode === 'combat' };
     }
   }
 
@@ -352,18 +425,27 @@ function resumeOrAdvance(c) {
   c.turn.resume = false; E.advance(c);
 }
 function beginAdventure(c) {
-  c.status = 'active'; c.turn.mode = 'explore';
+  c.status = 'active'; c.turn.mode = 'explore'; WORLD.setup(c);
   E.enterScene(c, c.startScene, null);
   E.buildExploreOrder(c); c.turn.index = 0;
   E.addLog(c, 'title', c.adventure.title, { premise: c.adventure.premise });
   if (c.adventure.hook) E.addLog(c, 'narration', c.adventure.hook, { who: 'DM' });
+  Object.values(c.characters).forEach(ch => { if ((ch.backstory || '').trim().length > 8) WORLD.personalQuest(c, ch, WH); });
   E.beginTurn(c);
   if (H.aiActive(c)) H.queueAI(c, 'flavor', { what: `The adventure "${c.adventure.title}" just began. Welcome each hero by name in one short line each, tying in their backstory if they have one, and end with "What do you do?"` });
 }
 function addNextAdventure(c, lvl, hub, outline) {
   const r = ADV.generateNext(c, lvl, hub, outline);
+  if (outline && outline.faction) { const q = c.quests[c.quests.length - 1]; if (q) q.faction = outline.faction; }
   const hubDef = c.sceneDefs[hub]; hubDef.exits = hubDef.exits || []; hubDef.exits.push({ to: r.roadKey, label: c.sceneDefs[r.roadKey].name });
   hubDef.npcs = hubDef.npcs || []; hubDef.npcs.push(r.giverKey);
+  placeGiver(c, hub, r);
+  c.adventureDone = false;
+  E.addLog(c, 'title', `Chapter ${c.adventure.chapter}: ${r.name}`, {});
+  E.addLog(c, 'narration', `Word reaches ${c.sceneDefs[hub].name}: ${c.npcs[r.giverKey].name} is looking for heroes. ${c.npcs[r.giverKey].topics['The trouble']}`, { who: 'DM' });
+  if (c.sceneId !== hub) E.addLog(c, 'system', `Head to ${c.sceneDefs[hub].name} to find ${c.npcs[r.giverKey].name}.`);
+}
+function placeGiver(c, hub, r) {
   const hs = c.scenes[hub];
   if (hs) {
     const used = new Set(hs.pois.map(p => p.x + ',' + p.y));
@@ -372,10 +454,8 @@ function addNextAdventure(c, lvl, hub, outline) {
     hs.pois.push({ id: E.uid(3), type: 'exit', x: sp[0], y: sp[1], name: c.sceneDefs[r.roadKey].name, to: r.roadKey });
     const [nx, ny] = E.freeSpotNear(hs, 8, 12); hs.tokens.push({ id: E.uid(4), kind: 'npc', npcKey: r.giverKey, name: c.npcs[r.giverKey].name, x: nx, y: ny, look: c.npcs[r.giverKey].look, conds: [] });
   }
-  c.adventureDone = false;
-  E.addLog(c, 'title', `Chapter ${c.adventure.chapter}: ${r.name}`, {});
-  E.addLog(c, 'narration', `Word reaches town: ${c.npcs[r.giverKey].name} is looking for heroes. ${c.npcs[r.giverKey].topics['The trouble']}`, { who: 'DM' });
-  if (c.sceneId !== hub) E.addLog(c, 'system', `Head back to ${c.sceneDefs[hub].name} to find ${c.npcs[r.giverKey].name}.`);
 }
+const WH = { addAdventure: (c, l, hub, o) => addNextAdventure(c, l, hub, o), placeGiver: (c, hub, r) => placeGiver(c, hub, r) };
+WORLD.setHooks(WH);
 
-module.exports = { handle, setHooks, beginAdventure, addNextAdventure, isDM, resumeOrAdvance };
+module.exports = { placeGiver, WH, handle, setHooks, beginAdventure, addNextAdventure, isDM, resumeOrAdvance };

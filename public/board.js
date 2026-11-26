@@ -172,6 +172,7 @@
       const dimmed = tk.kind === 'monster' && tk.dimmed;
       // shadow & base
       g.fillStyle = 'rgba(20,10,5,.35)'; g.beginPath(); g.ellipse(cx + 2 + ox, cy + 15 * size + oy, 15 * size, 5 * size, 0, 0, 7); g.fill();
+      if (tk.kind === 'ally') { g.strokeStyle = tk.summoned ? '#9fe0ff' : '#8fd16a'; g.lineWidth = 2.5; g.beginPath(); g.ellipse(cx + ox, cy + 13 * size + oy, 14 * size, 5 * size, 0, 0, 7); g.stroke(); }
       if (isCur) { g.strokeStyle = '#ffd36b'; g.lineWidth = 3.5; g.beginPath(); g.ellipse(cx + ox, cy + 13 * size + oy, 17 * size + Math.sin(t * 6) * 1.5, 6.5 * size, 0, 0, 7); g.stroke(); }
       if (B.opts.targets && B.opts.targets.has(tk.id)) { g.strokeStyle = B.opts.targetColor || '#ff5a3d'; g.lineWidth = 3; g.beginPath(); g.arc(cx, cy, 21 * size + Math.sin(t * 7) * 2.5, 0, 7); g.stroke(); }
       if (B.opts.sel === tk.id) { g.strokeStyle = '#fff'; g.lineWidth = 2.5; g.setLineDash([5, 4]); g.beginPath(); g.arc(cx, cy, 22 * size, 0, 7); g.stroke(); g.setLineDash([]); }
@@ -180,15 +181,16 @@
       else if (tk.kind === 'npc') svg = root.ART.npcSVG(tk.look, tk.chained ? 'prisoner' : tk.role, 100);
       else if (tk.kind === 'mimic') svg = root.ART.propSVG('chest', 100, {});
       else svg = root.ART.monsterSVG(tk.mkey, 100, { flip: tk.facing < 0 });
-      const img = root.ART.toImg(svg); const sz = (tk.kind === 'mimic' ? 34 : 42) * size;
+      const img = root.ART.toImg(svg); const sz = (tk.kind === 'mimic' ? 34 : tk.kind === 'ally' ? ((root.RULES.COMPANIONS[tk.petKey] || {}).scale ? 30 : 36) : 42) * size;
+      if (tk.kind === 'ally' && tk.summoned) g.globalAlpha = .8;
       g.globalAlpha = (tk.dead ? .35 : (tk.kind === 'pc' && tk.hp <= 0) ? .55 : 1) * (dimmed ? .55 : 1);
       if (img.complete) { if (tk.kind === 'pc' && tk.hp <= 0) { g.save(); g.translate(cx + ox, cy + 8 + oy); g.rotate(Math.PI / 2); g.drawImage(img, -sz / 2, -sz / 2, sz, sz); g.restore(); } else g.drawImage(img, cx - sz / 2 + ox, cy - sz / 2 - 4 * size + bob + oy, sz, sz); }
       g.globalAlpha = 1;
       if (tk.kind === 'npc' && tk.chained) { g.strokeStyle = '#8a929c'; g.lineWidth = 2.5; g.beginPath(); g.arc(cx - 8, cy + 10, 4, 0, 7); g.arc(cx + 8, cy + 10, 4, 0, 7); g.stroke(); }
       // hp bar
-      if (tk.kind === 'pc' || tk.kind === 'monster') {
+      if (tk.kind === 'pc' || tk.kind === 'monster' || tk.kind === 'ally') {
         const frac = tk.kind === 'pc' ? Math.max(0, tk.hp) / tk.maxHp : tk.hpPct; const w = 30 * size; const bx = cx - w / 2 + ox, by = cy - 26 * size + oy + bob;
-        g.fillStyle = 'rgba(20,10,5,.75)'; g.fillRect(bx - 1, by - 1, w + 2, 6); g.fillStyle = tk.kind === 'pc' ? (frac > .5 ? '#8fd16a' : frac > .25 ? '#e8c14a' : '#e8604a') : '#e8604a'; g.fillRect(bx, by, w * frac, 4);
+        g.fillStyle = 'rgba(20,10,5,.75)'; g.fillRect(bx - 1, by - 1, w + 2, 6); g.fillStyle = tk.kind === 'ally' ? '#6fd1a0' : tk.kind === 'pc' ? (frac > .5 ? '#8fd16a' : frac > .25 ? '#e8c14a' : '#e8604a') : '#e8604a'; g.fillRect(bx, by, w * frac, 4);
         if (tk.temp) { g.fillStyle = '#6fb7ff'; g.fillRect(bx, by - 3, Math.min(w, w * tk.temp / tk.maxHp), 2); }
         if (tk.boss && B.cam.s > .45) label(g, tk.name, cx, by - 6, '#ffd36b');
       }

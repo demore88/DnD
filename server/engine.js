@@ -41,7 +41,7 @@ function newCampaign(owner, opts, codeTaken) {
   let code; do { code = Math.random().toString(36).slice(2, 7).toUpperCase(); } while (codeTaken(code));
   const c = {
     id: uid(6), code, name: String(opts.name || 'New Campaign').slice(0, 60), ownerId: owner.id, premise: String(opts.premise || '').slice(0, 600),
-    dmMode: opts.dmMode === 'human' ? 'human' : 'ai', dmUserId: opts.dmMode === 'human' ? owner.id : null, pace: opts.pace === 'live' ? 'live' : 'async', turnTimer: 0,
+    dmMode: opts.dmMode === 'human' ? 'human' : 'ai', dmUserId: opts.dmMode === 'human' ? owner.id : null, safety: require('./safety').defaults(opts.safety || {}), pace: opts.pace === 'live' ? 'live' : 'async', turnTimer: 0,
     status: 'lobby', members: [owner.id], characters: {}, log: [], notes: [], events: [], flags: {}, quests: [], npcs: {}, scenes: {}, sceneDefs: {}, sceneId: null,
     turn: { mode: 'explore', order: [], index: 0, round: 1, phase: 'act', pendingRoll: null, startedAt: now(), res: null, notified: 0, xpPool: 0, goldPool: 0 },
     library: [], createdAt: now(), updatedAt: now(), shortRests: 0
@@ -87,14 +87,27 @@ function cleanLook(l) {
   ['gloves', 'earring'].forEach(k => { if (l[k] != null) out[k] = !!l[k]; });
   return out;
 }
+const EV = {};
 function raceFeats(race) { const r = R.RACES[race] || {}; return [].concat(r.feature || [], r.features || []); }
 function refreshClass(ch) {
   const C = R.CLASSES[ch.class];
-  const feats = R.featuresAt(ch.class, ch.level);
-  ch.features = [...new Set([...feats, ...raceFeats(ch.race)])];
+  const feats = R.featuresAt(ch.class, ch.level, ch.subclass);
+  ch.features = [...new Set([...feats, ...raceFeats(ch.race), ...(ch.feats || [])])];
   const st = R.slotTable(ch.class, ch.level); const old = ch.slots || [];
   ch.slots = st.map((n, i) => ({ max: n, used: Math.min(old[i]?.used || 0, n) }));
-  ch.spells = R.classSpells(ch.class, ch.level);
+  const allSp = R.classSpells(ch.class, ch.level); const maxL = R.maxSpellLevel(ch.class, ch.level);
+  if (R.KNOWN[ch.class]) {
+    const lv = allSp.filter(k => R.SPELLS[k].lvl > 0);
+    if (!ch.known) ch.known = lv.slice(0, R.knownCount(ch.class, ch.level));
+    ch.spells = allSp.filter(k => R.SPELLS[k].lvl === 0 || ch.known.includes(k));
+  } else ch.spells = allSp;
+  const S = ch.subclass && R.SUBCLASSES[ch.class]?.[ch.subclass];
+  if (S && S.spells) S.spells.forEach(k => { if (R.SPELLS[k] && R.SPELLS[k].lvl <= maxL && !ch.spells.includes(k)) ch.spells.push(k); });
+  if ((ch.feats || []).includes('feat_magic_initiate')) ['fire_bolt', 'healing_word', 'magic_missile'].forEach(k => { if (!ch.spells.includes(k)) ch.spells.push(k); });
+  if (ch.features.includes('maneuvers')) ch.sup = { max: ch.level >= 7 ? 5 : 4, used: Math.min(ch.sup?.used || 0, ch.level >= 7 ? 5 : 4) };
+  if (ch.features.includes('ranger_companion')) { ch.pets = ch.pets || []; if (!ch.pets.some(p => p.key === 'wolf')) ch.pets.push(newPet('wolf', ch)); }
+  if (ch.features.includes('feat_resilient') && !ch.saves.includes('con')) ch.saves.push('con');
+  (ch.pets || []).forEach(p => { const P = R.COMPANIONS[p.key]; const M = R.BESTIARY[P.mkey]; const mx = Math.round(M.hp * (P.scale || 1)) + P.hpPer * (ch.level - 1); if (p.maxHp !== mx) { p.hp = Math.min(mx, (p.hp || mx) + Math.max(0, mx - (p.maxHp || 0))); p.maxHp = mx; } });
   if (ch.features.includes('favored_foe') && !ch.spells.includes('hunters_mark')) ch.spells.push('hunters_mark');
   if (ch.features.includes('lay_on_hands') && ch.pool == null) ch.pool = 5 * ch.level;
   if (ch.features.includes('ki')) ch.ki = { max: ch.level, used: Math.min(ch.ki?.used || 0, ch.level) };
@@ -102,7 +115,44 @@ function refreshClass(ch) {
   ch.castAb = C.castAb || null;
 }
 function featureUses(ch, k) { const F = R.FEATURES[k]; if (!F || !F.uses) return null; return F.uses(ch.level, ch); }
-function attacksPerAction(ch) { return ch.features.includes('extra_attack') ? 2 : 1; }
+function attacksPerAction(ch) {
+  let n = ch.features.includes('extra_attack3') ? 4 : ch.features.includes('extra_attack2') ? 3 : ch.features.includes('extra_attack') ? 2 : 1;
+  const cs = ch.conds || []; if (cs.some(x => x.k === 'hasted')) n++; if (ch.features.includes('frenzy') && cs.some(x => x.k === 'raging')) n++;
+  return n;
+}
+function newPet(key, ch) { const P = R.COMPANIONS[key]; const M = R.BESTIARY[P.mkey]; const mx = Math.round(M.hp * (P.scale || 1)) + P.hpPer * ((ch?.level || 1) - 1); return { key, name: P.name, hp: mx, maxHp: mx, down: false }; }
+// ---------- reactions, cover, concentration, saves ----------
+function reactOk(c, t) { c.turn.react = c.turn.react || {}; return c.turn.react[t.id] !== c.turn.round; }
+function useReact(c, t) { c.turn.react = c.turn.react || {}; c.turn.react[t.id] = c.turn.round; }
+const COVER = new Set(['#', 'T', 'r', '^', 'o', 'b', 't', 'w', 'f', 'G', 'h', 'c']);
+function coverAC(c, att, tgt) {
+  if (cheb(att, tgt) <= 1) return 0; const s = scene(c);
+  const nx = tgt.x + Math.sign(att.x - tgt.x), ny = tgt.y + Math.sign(att.y - tgt.y);
+  return COVER.has(tileAt(s, nx, ny)) ? 2 : 0;
+}
+function dropConc(c, ch, why) {
+  if (!ch || !ch.conc) return; const t = tokenOfChar(c, ch.id); const cc = ch.conc; ch.conc = null; const s = scene(c);
+  if (s) {
+    s.tokens.forEach(o => { const cs = o.kind === 'pc' ? (c.characters[o.charId]?.conds || []) : (o.conds || []); for (let i = cs.length - 1; i >= 0; i--) if (cs[i].k === cc.cond && t && cs[i].src === t.id) cs.splice(i, 1); });
+    s.tokens.filter(o => o.kind === 'ally' && o.summonedBy === ch.id).forEach(o => removeAlly(c, o, true));
+    s.tokens.filter(o => o.banished && o.banishedBy === ch.id).forEach(o => unbanish(c, o));
+  }
+  ch.conds = (ch.conds || []).filter(x => x.k !== 'concentrating');
+  if (why) addLog(c, 'system', `🧠 ${ch.name} loses concentration on ${R.SPELLS[cc.spell]?.name || 'their spell'}${why === 'dmg' ? '!' : '.'}`);
+}
+function unbanish(c, o) { o.banished = false; const s = scene(c); const [x, y] = freeSpotNear(s, o.x, o.y, o.id); o.x = x; o.y = y; if (c.turn.mode === 'combat' && !c.turn.order.some(e => e.tokenId === o.id)) c.turn.order.push({ kind: 'monster', tokenId: o.id, init: 0 }); addLog(c, 'alert', `🌀 ${o.name} pops back into the world!`, { fx: { k: 'summon', ids: [o.id] } }); }
+function auraBonus(c, t) { const s = scene(c); if (!s) return 0; let best = 0; s.tokens.forEach(o => { if (o.kind !== 'pc') return; const pc = c.characters[o.charId]; if (pc && !pc.dead && pc.hp > 0 && pc.features.includes('aura_protection') && cheb(o, t) <= 2) best = Math.max(best, Math.max(1, R.mod(pc.scores.cha))); }); return best; }
+// a hero's saving throw with every bonus that applies
+function pcSave(c, t, ch, ab, dc, o = {}) {
+  let a = 0, d = 0; if (hasCond(c, t, 'foresight')) a++; if (o.cond && ['charmed', 'frightened'].includes(o.cond) && partyHas(c, t, 'countercharm', 6)) a++;
+  if (ab === 'dex' && hasCond(c, t, 'dodging')) a++;
+  const roll = () => { const r = d20(advOf(a, d), ch.race === 'Halfling'); let b = saveMod(ch, ab) + auraBonus(c, t); if (ab === 'dex' && ch.features.includes('feat_shield_master') && ch.equip.shield) b += 2; if (hasCond(c, t, 'blessed')) b += rollDice('1d4').total; return r.pick + b; };
+  let tot = roll(); let ok = tot >= dc;
+  if (!ok && ch.features.includes('indomitable') && !ch.uses.indomitable) { ch.uses.indomitable = 1; tot = roll(); ok = tot >= dc; addLog(c, 'system', `💪 ${ch.name} is Indomitable — rerolls the save: ${tot}${ok ? ' ✅' : ' ❌'}`); }
+  if (!ok && ch.features.includes('feat_lucky') && (ch.uses.feat_lucky || 0) < 3) { ch.uses.feat_lucky = (ch.uses.feat_lucky || 0) + 1; tot = roll(); ok = tot >= dc; addLog(c, 'system', `🍀 ${ch.name} uses a Lucky point: ${tot}${ok ? ' ✅' : ' ❌'}`); }
+  return { total: tot, ok };
+}
+function partyHas(c, t, feat, range) { const s = scene(c); return !!s && s.tokens.some(o => o.kind === 'pc' && cheb(o, t) <= range && c.characters[o.charId]?.features.includes(feat) && c.characters[o.charId].hp > 0); }
 function spellAtk(ch) { return R.prof(ch.level) + R.mod(ch.scores[ch.castAb || 'int']); }
 function spellDC(ch) { return 8 + spellAtk(ch); }
 function passivePerception(ch) { return 10 + R.mod(ch.scores.wis) + (ch.skills.includes('perception') ? R.prof(ch.level) : 0); }
@@ -136,7 +186,16 @@ function takeZoneSpot(s, zone, used) {
   if (!pts.length) return null; const p = pick(pts); used.add(p[0] + ',' + p[1]); return p;
 }
 
+// table-safety "never include" topics also keep matching monsters off the map
+function safeKey(c, key) {
+  const lines = (c.safety && c.safety.lines || []).map(l => String(l).toLowerCase().replace(/s$/, '')).filter(l => l.length > 2); if (!lines.length) return key;
+  const bad = (k) => { const M = R.BESTIARY[k]; if (!M) return false; const t = (k + ' ' + M.name + ' ' + (M.type || '') + ' ' + (M.art?.a || '')).toLowerCase(); return lines.some(l => t.includes(l)); };
+  if (!bad(key)) return key; const M0 = R.BESTIARY[key]; const cr = R.crNum ? R.crNum(M0.cr) : 1;
+  const alt = Object.keys(R.BESTIARY).filter(k => !bad(k) && !R.BESTIARY[k].boss === !M0.boss).sort((a, b) => Math.abs(R.crNum(R.BESTIARY[a].cr) - cr) - Math.abs(R.crNum(R.BESTIARY[b].cr) - cr));
+  return alt[0] || 'goblin';
+}
 function monsterToken(c, key, x, y, extra) {
+  const orig = key; key = safeKey(c, key); if (orig !== key) extra = Object.assign({}, extra || {}, { origKey: orig });
   const M = R.BESTIARY[key] || R.BESTIARY.goblin;
   const lvl = avgLevel(c); const scale = lvl >= 3 ? 1 + 0.12 * (lvl - 2) : 1;
   const hp = Math.round(M.hp * (M.boss ? Math.max(1, partySize(c) / 4) * scale : scale));
@@ -211,6 +270,8 @@ function enterScene(c, key, fromKey) {
     let t = pcs.find(p => p.charId === ch.id) || { id: uid(4), kind: 'pc', charId: ch.id, conds: [] };
     const [x, y] = freeSpotNear(s, ax, ay, t.id); t.x = x; t.y = y; t.name = ch.name; s.tokens.push(t);
   });
+  if (old) { syncPets(c); old.tokens = old.tokens.filter(t => t.kind !== 'ally'); }
+  chars.forEach(ch => placePets(c, ch)); if (EV.onEnter) EV.onEnter(c, key);
   const first = !s.visited; s.visited = true;
   updateVision(c, true);
   addLog(c, 'scene', s.name, { scene: key, desc: first ? s.desc : null });
@@ -292,7 +353,7 @@ function offerQuest(c, qid) {
   return true;
 }
 function completeQuest(c, q) {
-  q.status = 'done'; const rw = q.reward || {};
+  q.status = 'done'; const rw = q.reward || {}; if (EV.onQuestDone) try { EV.onQuestDone(c, q); } catch (e) { console.error(e); }
   const alive = Object.values(c.characters).filter(ch => !ch.dead);
   alive.forEach(ch => { if (rw.gold) ch.gold += rw.gold; if (rw.xp) giveXp(c, ch, rw.xp); });
   if (rw.item && alive.length) { const lucky = alive[rnd(alive.length)]; invAdd(lucky, rw.item); }
@@ -320,14 +381,15 @@ function removeCond(c, t, k) { const cs = condsOf(c, t); const i = cs.findIndex(
 function tickConds(c, t) {
   const cs = condsOf(c, t); for (let i = cs.length - 1; i >= 0; i--) { cs[i].r--; if (cs[i].r <= 0) { const k = cs[i].k; cs.splice(i, 1); if (['restrained', 'paralyzed', 'frightened', 'charmed', 'raging', 'turned', 'asleep'].includes(k)) addLog(c, 'system', `${t.name} is no longer ${R.CONDITIONS[k]?.name.toLowerCase() || k}.`); } }
 }
-function isHelpless(c, t) { return ['paralyzed', 'asleep'].some(k => hasCond(c, t, k)); }
+function isHelpless(c, t) { return ['paralyzed', 'asleep', 'stunned'].some(k => hasCond(c, t, k)); }
 
 // ---------------- hp ----------------
 function hpOf(c, t) { const ch = charOfToken(c, t); return ch ? ch.hp : t.hp; }
 function maxHpOf(c, t) { const ch = charOfToken(c, t); return ch ? ch.maxHp : t.maxHp; }
 function acOf(c, t) {
   const ch = charOfToken(c, t); let ac = ch ? R.computeAC(ch) : t.ac;
-  if (hasCond(c, t, 'shielded')) ac += 5; if (hasCond(c, t, 'shield_of_faith')) ac += 2; if (hasCond(c, t, 'shelled')) ac += 4;
+  if (hasCond(c, t, 'shielded')) ac += 5; if (hasCond(c, t, 'shield_of_faith')) ac += 2; if (hasCond(c, t, 'shelled')) ac += 4; if (hasCond(c, t, 'hasted')) ac += 2;
+  if (ch && hasCond(c, t, 'mage_armor') && !ch.equip.armor) ac = Math.max(ac, 13 + R.mod(ch.scores.dex) + (ch.equip.shield ? 2 : 0));
   return ac;
 }
 function isAlive(c, t) { if (!t || t.gone) return false; const ch = charOfToken(c, t); return ch ? !ch.dead : t.hp > 0; }
@@ -343,10 +405,15 @@ function damage(c, t, amount, dtype, opts = {}) {
     if (hasCond(c, t, 'raging') && ['bludgeoning', 'piercing', 'slashing'].includes(dtype)) dmg = Math.floor(dmg / 2);
     if (ch.features.includes('uncanny_dodge') && opts.attack && !c.turn['ud_' + ch.id + '_' + c.turn.round]) { c.turn['ud_' + ch.id + '_' + c.turn.round] = 1; dmg = Math.floor(dmg / 2); }
     if ((R.RACES[ch.race]?.resist || []).includes(dtype)) dmg = Math.floor(dmg / 2);
+    else if (ch.features.includes('bear_spirit') && hasCond(c, t, 'raging') && dtype !== 'psychic' && !['bludgeoning', 'piercing', 'slashing'].includes(dtype)) dmg = Math.floor(dmg / 2);
     if (ch.features.includes('stones_endurance') && opts.attack && !ch.uses.stones_endurance && ch.hp > 0 && (dmg >= 8 || dmg >= ch.hp)) { ch.uses.stones_endurance = 1; const red = rollDice('1d12').total + R.mod(ch.scores.con); dmg = Math.max(0, dmg - red); addLog(c, 'system', `🪨 ${ch.name} braces like a mountain — Stone's Endurance blocks ${red} damage!`); }
     if (ch.temp) { const a = Math.min(ch.temp, dmg); ch.temp -= a; dmg -= a; }
     if (ch.hp <= 0) { if (!ch.dead) { ch.deathFails += opts.crit ? 2 : 1; if (ch.deathFails >= 3) die(c, t); } return amount; }
+    const wasShaped = hasCond(c, t, 'wildshaped'); if (wasShaped && ch.temp === 0) { removeCond(c, t, 'wildshaped'); addLog(c, 'system', `🐻 ${ch.name} is knocked out of beast form!`); }
     ch.hp -= dmg;
+    if (ch.conc && dmg > 0) { const dc = Math.max(10, Math.floor(dmg / 2)); const r1 = d20().pick, r2 = ch.features.includes('feat_warcaster') ? d20().pick : 0; const sv = Math.max(r1, r2) + saveMod(ch, 'con'); if (ch.hp <= 0 || sv < dc) dropConc(c, ch, 'dmg'); }
+    if (ch.hp <= 0 && hasCond(c, t, 'warded')) { removeCond(c, t, 'warded'); ch.hp = 1; addLog(c, 'system', `💀 Death Ward flares — ${ch.name} stays standing with 1 HP!`); return amount; }
+    if (ch.hp <= 0 && ch.features.includes('relentless_rage') && hasCond(c, t, 'raging') && !ch.uses.relentless_rage) { ch.uses.relentless_rage = 1; const sv = d20().pick + saveMod(ch, 'con'); if (sv >= 10) { ch.hp = 1; addLog(c, 'system', `😤 ${ch.name}'s Relentless Rage keeps them fighting!`); return amount; } }
     if (ch.hp <= 0) {
       if (ch.race === 'Half-Orc' && !ch.uses.relentless && ch.hp > -ch.maxHp) { ch.uses.relentless = 1; ch.hp = 1; addLog(c, 'system', `💢 ${ch.name} refuses to fall! (Relentless Endurance)`); return amount; }
       if (-ch.hp >= ch.maxHp) { ch.hp = 0; die(c, t); return amount; }
@@ -357,6 +424,7 @@ function damage(c, t, amount, dtype, opts = {}) {
     removeCond(c, t, 'asleep');
     return amount;
   }
+  if (t.kind === 'ally') { t.hp -= dmg; if (t.hp <= 0) removeAlly(c, t); return dmg; }
   const M = R.BESTIARY[t.mkey] || {};
   const traits = M.traits || [];
   const phys = ['bludgeoning', 'piercing', 'slashing'].includes(dtype);
@@ -368,6 +436,8 @@ function damage(c, t, amount, dtype, opts = {}) {
   t.hp -= dmg; removeCond(c, t, 'asleep'); if (hasCond(c, t, 'charmed')) removeCond(c, t, 'charmed');
   if (t.hp <= 0) {
     if (traits.includes('undead_fortitude') && dtype !== 'radiant' && !opts.crit && !t.fortUsed) { const r = d20().pick + 3; if (r >= 5 + dmg) { t.hp = 1; t.fortUsed = true; addLog(c, 'system', `🧟 ${t.name} refuses to stay down!`); return dmg; } }
+    const killer = opts.attacker && opts.attacker.kind === 'pc' ? charOfToken(c, opts.attacker) : (c._lastPc ? c.characters[c._lastPc] : null);
+    if (killer && killer.features.includes('dark_blessing')) { const tmp = Math.max(1, R.mod(killer.scores.cha) + killer.level); killer.temp = Math.max(killer.temp || 0, tmp); addLog(c, 'system', `😈 ${killer.name}'s patron is pleased: +${tmp} temp HP`); }
     killMonster(c, t);
   } else if (M.special) {
     M.special.filter(sp => sp.at && sp.kind === 'summon' && !t.used[sp.n] && t.hp <= t.maxHp * sp.at).forEach(sp => { t.used[sp.n] = 1; summon(c, t, sp); });
@@ -386,7 +456,7 @@ function killMonster(c, t) {
   addLog(c, 'kill', `${t.name} is defeated!`, { fx: { k: 'kill', t: t.id } });
   c.turn.xpPool += M.xp || 25;
   if (M.type === 'humanoid') c.turn.goldPool += rollDice(M.boss ? '6d10' : '1d6').total;
-  event(c, 'kill:' + t.mkey);
+  event(c, 'kill:' + t.mkey); if (t.origKey) event(c, 'kill:' + t.origKey); if (EV.onKill) try { EV.onKill(c, t); } catch (e) { console.error(e); }
   const s = scene(c); s.tokens = s.tokens.filter(x => x.id !== t.id);
   const idx = c.turn.order.findIndex(e => e.tokenId === t.id);
   if (idx >= 0) { c.turn.order.splice(idx, 1); if (idx < c.turn.index) c.turn.index--; if (c.turn.index >= c.turn.order.length) c.turn.index = 0; }
@@ -401,21 +471,22 @@ function summon(c, t, sp) {
 function initMonster(t) { return d20().pick + (t.size > 1 ? 0 : 2); }
 function freshRes(c, ch) { return { action: 1, bonus: 1, move: ch ? Math.floor((ch.speed + (ch.equip.boots ? R.ITEMS[ch.equip.boots]?.speed || 0 : 0)) / 5) : 6, attacksLeft: 0, sneak: false, attacked: false, lightUsed: false, surge: false }; }
 function buildExploreOrder(c) {
+  if (c.turn.mode === 'combat') return; // never clobber a fight that started on arrival
   c.turn.order = Object.values(c.characters).filter(ch => !ch.dead).sort((a, b) => a.joinedAt - b.joinedAt).map(ch => ({ kind: 'pc', charId: ch.id }));
   if (c.turn.index >= c.turn.order.length) c.turn.index = 0;
 }
 const currentEntry = (c) => c.turn.order[c.turn.index] || null;
 function currentUserId(c) { const e = currentEntry(c); return e && e.kind === 'pc' ? c.characters[e.charId]?.ownerId : null; }
 function nameOfEntry(c, e) { if (!e) return '—'; if (e.kind === 'pc') return c.characters[e.charId]?.name || '?'; const t = scene(c)?.tokens.find(x => x.id === e.tokenId); return t ? t.name : 'Monster'; }
-function activeMonsters(c) { const s = scene(c); return s ? s.tokens.filter(t => t.kind === 'monster' && !t.dormant && !t.gone && t.hp > 0) : []; }
+function activeMonsters(c) { const s = scene(c); return s ? s.tokens.filter(t => t.kind === 'monster' && !t.dormant && !t.gone && !t.banished && t.hp > 0) : []; }
 
 function startCombat(c, encId, surpriseBy) {
   const mons = activeMonsters(c); if (!mons.length) return false;
   const entries = [];
-  Object.values(c.characters).filter(ch => !ch.dead).forEach(ch => entries.push({ kind: 'pc', charId: ch.id, init: d20(null, ch.race === 'Halfling').pick + R.mod(ch.scores.dex) }));
+  Object.values(c.characters).filter(ch => !ch.dead).forEach(ch => entries.push({ kind: 'pc', charId: ch.id, init: d20(ch.features.includes('feral_instinct') ? 'adv' : null, ch.race === 'Halfling').pick + R.mod(ch.scores.dex) + (ch.features.includes('feat_alert') ? 5 : 0) }));
   mons.forEach(t => entries.push({ kind: 'monster', tokenId: t.id, init: initMonster(t) + (surpriseBy === 'monsters' ? 10 : 0) }));
   entries.sort((a, b) => b.init - a.init || (a.kind === 'pc' ? -1 : 1));
-  c.turn.mode = 'combat'; c.turn.order = entries; c.turn.index = 0; c.turn.round = 1; c.turn.xpPool = 0; c.turn.goldPool = 0;
+  c.turn.mode = 'combat'; c.turn.order = entries; c.turn.index = 0; c.turn.round = 1; c.turn.xpPool = 0; c.turn.goldPool = 0; c.turn.react = {}; c.turn.attackedIds = {};
   addLog(c, 'initiative', 'Roll for initiative!', { order: entries.map(e => ({ name: nameOfEntry(c, e), init: e.init })) });
   beginTurn(c); return true;
 }
@@ -427,6 +498,8 @@ function endCombat(c) {
   Object.values(c.characters).forEach(ch => { if (ch.hp <= 0 && !ch.dead) { ch.stable = true; } });
   addLog(c, 'victory', `Victory! +${each} XP each${gold ? `, +${gold} gold each from the fallen` : ''}.`, { fx: { k: 'victory' } });
   c.turn.mode = 'explore'; c.turn.xpPool = 0; c.turn.goldPool = 0; c.turn.round = 1;
+  const sc = scene(c); if (sc) { sc.tokens.filter(o => o.banished).forEach(o => { o.gone = true; addLog(c, 'system', `🌀 ${o.name} is lost forever on another plane.`); }); sc.tokens = sc.tokens.filter(o => !o.gone && !(o.kind === 'ally' && o.summonedBy)); }
+  Object.values(c.characters).forEach(ch => { (ch.pets || []).forEach(p => { if (p.down) { p.down = false; p.hp = 1; addLog(c, 'system', `${R.COMPANIONS[p.key].icon} ${p.name} limps back to ${ch.name}'s side.`); placePets(c, ch); } }); dropConc(c, ch); });
   buildExploreOrder(c); c.turn.index = 0;
   if (H.aiActive(c)) H.queueAI(c, 'flavor', { what: 'The party just won the fight. Describe the aftermath in 1-2 sentences and hint at what to explore next.' });
   // stabilized heroes wake with 1 hp after the fight
@@ -480,6 +553,7 @@ function advance(c) {
   if (c.turn.mode === 'explore') buildExploreOrder(c);
   if (!c.turn.order.length) return;
   const wasIndex = c.turn.index;
+  if (c.turn.mode === 'combat') { const e0 = currentEntry(c); if (e0 && e0.kind === 'pc') { try { alliesAct(c, c.characters[e0.charId]); } catch (err) { console.error(err); } if (checkCombatEnd(c)) return; } }
   c.turn.index = (c.turn.index + 1) % c.turn.order.length;
   if (c.turn.index <= wasIndex) { c.turn.round++; if (c.turn.mode === 'combat' && H.aiActive(c) && c.turn.round % 2 === 0) H.queueAI(c, 'flavor', { what: `Round ${c.turn.round - 1} of the fight just ended. In ONE short dramatic sentence, describe the state of the battle.` }); }
   beginTurn(c);
@@ -514,20 +588,23 @@ function pathTo(c, s, t, tx, ty, budget, opts = {}) {
 // Moves a PC step by step: triggers traps, wakes encounters. Returns {path, stopped}
 function walk(c, t, path) {
   const s = scene(c); const walked = [];
+  const fight = c.turn.mode === 'combat' && t.kind === 'pc';
   for (const [x, y] of path) {
     if (x > t.x) t.facing = 1; else if (x < t.x) t.facing = -1;
+    if (fight && provokeFromMonsters(c, t, x, y)) break;
     t.x = x; t.y = y; walked.push([x, y]);
     const trap = s.pois.find(p => p.type === 'trap' && !p.disarmed && !p.triggered && p.x === x && p.y === y);
     if (trap) { springTrap(c, t, trap); break; }
     if (updateVision(c)) break;
   }
+  if (t.kind === 'pc' && c.turn.mode !== 'combat') { const ch = charOfToken(c, t); if (ch) petsFollow(c, ch); }
   return walked;
 }
 function springTrap(c, t, trap) {
   const ch = charOfToken(c, t); trap.triggered = true; trap.hidden = false; trap.found = true;
-  const r = d20(null, ch?.race === 'Halfling'); const total = r.pick + (ch ? saveMod(ch, trap.save || 'dex') : 0);
+  const r = { pick: 0 }; const total = ch ? pcSave(c, t, ch, trap.save || 'dex', trap.dc).total : d20().pick;
   const dmg = rollDice(trap.dmg || '1d6').total; const ok = total >= trap.dc;
-  addLog(c, 'alert', `⚠️ ${t.name} triggers a ${trap.name}! ${R.ABILITY_NAMES[trap.save || 'dex']} save: ${r.pick}${fmtMod(total - r.pick)} = ${total} vs DC ${trap.dc} — ${ok ? `dodges half (${Math.floor(dmg / 2)} damage)` : `${dmg} damage!`}`, { fx: { k: 'trap', t: t.id, dmg: ok ? Math.floor(dmg / 2) : dmg } });
+  addLog(c, 'alert', `⚠️ ${t.name} triggers a ${trap.name}! ${R.ABILITY_NAMES[trap.save || 'dex']} save: ${total} vs DC ${trap.dc} — ${ok ? `dodges half (${Math.floor(dmg / 2)} damage)` : `${dmg} damage!`}`, { fx: { k: 'trap', t: t.id, dmg: ok ? Math.floor(dmg / 2) : dmg } });
   damage(c, t, ok ? Math.floor(dmg / 2) : dmg, 'piercing');
   if (trap.alarm) { const s = scene(c); const enc = s.tokens.find(m => m.kind === 'monster' && m.dormant && !m.disguise); if (enc) { addLog(c, 'alert', '🔔 A bell jangles somewhere in the dark! Something heard that...'); wakeEncounter(c, enc.enc, 'monsters'); } }
 }
@@ -547,33 +624,58 @@ function attackRollMods(c, att, tgt, ranged) {
   if (['restrained', 'paralyzed', 'asleep', 'outlined', 'lit'].some(k => hasCond(c, tgt, k))) a++;
   if (hasCond(c, tgt, 'reckless')) a++;
   if (hasCond(c, tgt, 'dodging')) d++;
+  if (hasCond(c, att, 'foresight')) a++; if (hasCond(c, tgt, 'foresight')) d++;
+  if (hasCond(c, att, 'blinded')) { d++; notes.push('blinded'); } if (hasCond(c, tgt, 'blinded') || hasCond(c, tgt, 'stunned')) a++;
+  if (condsOf(c, tgt).some(x => x.k === 'vowed' && x.src === att.id)) { a++; notes.push('vow'); }
+  if (att.kind === 'pc') { const ach = charOfToken(c, att); const sc = scene(c);
+    if (ach && ach.features.includes('assassinate') && c.turn.mode === 'combat' && c.turn.round === 1) { a++; notes.push('assassinate'); }
+    if (sc && sc.tokens.some(o => o.kind === 'ally' && o.ownerId === ach?.id && R.COMPANIONS[o.petKey]?.helper && cheb(o, tgt) <= 1)) { a++; notes.push('familiar'); } }
   if (att.kind === 'monster' && hasCond(c, tgt, 'hidden')) { d++; notes.push('can\'t see them'); }
   if (ranged) { const s = scene(c); const foes = s.tokens.filter(o => !o.gone && o.id !== att.id && cheb(o, att) <= 1 && (att.kind === 'pc' ? o.kind === 'monster' && !o.dormant && o.hp > 0 && !isHelpless(c, o) : o.kind === 'pc' && isUp(c, o))); if (foes.length) { d++; notes.push('enemy adjacent'); } }
   if (att.kind === 'pc') { const ach = charOfToken(c, att); if (ach && ach.features.includes('pack_tactics_pc') && scene(c).tokens.some(o => o.kind === 'pc' && o.id !== att.id && isUp(c, o) && cheb(o, tgt) <= 1)) { a++; notes.push('pack tactics'); } }
   if (att.kind === 'monster') { const traits = R.BESTIARY[att.mkey]?.traits || []; if (traits.includes('pack_tactics') && scene(c).tokens.some(o => o.kind === 'monster' && o.id !== att.id && !o.gone && !o.dormant && cheb(o, tgt) <= 1)) { a++; notes.push('pack tactics'); } }
   return { adv: advOf(a, d), notes };
 }
-function consumeAttackConds(c, att, tgt) { removeCond(c, att, 'hidden'); removeCond(c, att, 'helped'); removeCond(c, att, 'mocked'); removeCond(c, tgt, 'lit'); }
+function consumeAttackConds(c, att, tgt) { if (!condsOf(c, att).some(x => x.k === 'hidden' && x.lasting)) removeCond(c, att, 'hidden'); removeCond(c, att, 'helped'); removeCond(c, att, 'mocked'); removeCond(c, tgt, 'lit'); }
 
 // PC weapon attack
 function pcAttack(c, ch, t, tgt, w, opts = {}) {
+  c._lastPc = ch.id;
+  if (hasCond(c, t, 'wildshaped') && !w.ranged) w = Object.assign({}, w, { name: 'Bear Claws', dice: ch.features.includes('moon_form') ? '2d8' : '2d6', type: 'slashing', ab: 'str', k: 'claws', plus: 0, extra: null });
   const ranged = !!w.ranged || (w.range && cheb(t, tgt) > 1);
   const ab = weaponAbility(ch, w); const m = R.mod(ch.scores[ab]);
-  const hitB = m + R.prof(ch.level) + (w.plus || 0);
+  const hitB = m + R.prof(ch.level) + (w.plus || 0) + (hasCond(c, t, 'sacred') ? Math.max(1, R.mod(ch.scores.cha)) : 0);
   const mods = attackRollMods(c, t, tgt, ranged);
   let adv = opts.adv || mods.adv; if (opts.adv && mods.adv && opts.adv !== mods.adv) adv = null;
-  const r = d20(adv, ch.race === 'Halfling');
+  let r = d20(adv, ch.race === 'Halfling');
   let bonus = 0, bonusTxt = '';
   if (hasCond(c, t, 'blessed')) { const b = rollDice('1d4').total; bonus += b; bonusTxt += ` +${b} bless`; }
   const insp = condsOf(c, t).find(x => x.k === 'inspired'); if (insp) { const b = rollDice('1d6').total; bonus += b; bonusTxt += ` +${b} inspiration`; removeCond(c, t, 'inspired'); }
-  const total = r.pick + hitB + bonus; const ac = acOf(c, tgt);
+  const cov = ranged && !ch.features.includes('feat_sharpshooter') ? coverAC(c, t, tgt) : 0; if (cov) mods.notes.push('cover +2');
+  let total = r.pick + hitB + bonus; const ac = acOf(c, tgt) + cov;
+  const rerollMiss = (why) => { r = d20(adv, ch.race === 'Halfling'); total = r.pick + hitB + bonus; mods.notes.push(why); };
+  if (r.pick !== 20 && total < ac && ch.features.includes('tides_of_chaos') && !ch.uses.tides_of_chaos) { ch.uses.tides_of_chaos = 1; rerollMiss('tides of chaos'); }
+  else if (r.pick !== 20 && total < ac && ch.features.includes('feat_lucky') && (ch.uses.feat_lucky || 0) < 3) { ch.uses.feat_lucky = (ch.uses.feat_lucky || 0) + 1; rerollMiss('lucky'); }
+  if (r.pick !== 1 && total < ac && total + 8 >= ac && ch.sup && ch.sup.used < ch.sup.max) { const pd = rollDice('1d8').total; if (total + pd >= ac) { ch.sup.used++; total += pd; mods.notes.push(`precision +${pd}`); } }
+  const critOn = ch.features.includes('improved_critical') ? (ch.level >= 15 ? 18 : 19) : 20;
   const autoCrit = isHelpless(c, tgt) && cheb(t, tgt) <= 1;
-  const crit = r.pick === 20 || (autoCrit && r.pick !== 1 && total >= ac); const hit = r.pick !== 1 && (crit || total >= ac);
+  const crit = r.pick >= critOn || (autoCrit && r.pick !== 1 && total >= ac); const hit = r.pick !== 1 && (crit || total >= ac);
   consumeAttackConds(c, t, tgt);
   let dmg = 0; const parts = [];
   if (hit) {
     const base = rollDice(weaponDice(ch, w), crit); dmg = base.total + (opts.offhand && m > 0 ? 0 : m) + (w.plus || 0); parts.push(`${base.total}${fmtMod((opts.offhand && m > 0 ? 0 : m) + (w.plus || 0))}`);
     if (crit && ch.race === 'Half-Orc' && !ranged) { const e = rollDice(weaponDice(ch, w)).total; dmg += e; parts.push(`${e} savage`); }
+    if (crit && ch.features.includes('brutal_critical') && !ranged) { const e = rollDice(weaponDice(ch, w)).total; dmg += e; parts.push(`${e} brutal`); }
+    const res = c.turn.res || {};
+    if (ch.features.includes('divine_strike') && !res.dstrike) { res.dstrike = true; const e = rollDice('1d8', crit).total; dmg += e; parts.push(`${e} divine strike`); }
+    if (ch.features.includes('improved_smite') && !ranged) { const e = rollDice('1d8', crit).total; dmg += e; parts.push(`${e} radiant`); }
+    if (ch.features.includes('colossus_slayer') && !res.colossus && tgt.hp < tgt.maxHp) { res.colossus = true; const e = rollDice('1d8', crit).total; dmg += e; parts.push(`${e} colossus slayer`); }
+    if (ch.features.includes('feat_gwm') && (w.heavy || w.two) && !ranged) { dmg += 3; parts.push('3 great weapon'); }
+    if (ch.features.includes('feat_sharpshooter') && ranged) { dmg += 2; parts.push('2 sharpshooter'); }
+    if (ch.features.includes('feat_polearm') && ['spear', 'quarterstaff', 'trident', 'pike', 'glaive', 'halberd'].includes(w.k)) { const e = rollDice('1d4').total; dmg += e; parts.push(`${e} butt-end`); }
+    if (insp && partyHas(c, t, 'combat_inspiration', 99)) { const e = rollDice('1d6').total; dmg += e; parts.push(`${e} valor`); }
+    if (opts.trip && ch.sup && ch.sup.used < ch.sup.max) { ch.sup.used++; const e = rollDice('1d8', crit).total; dmg += e; parts.push(`${e} trip`); const sv = d20().pick + monsterSave(tgt, 'str'); if (sv < 8 + R.prof(ch.level) + R.mod(ch.scores.str)) { opts._prone = true; } }
+    if (!ranged && ch.features.includes('stunning_strike') && ch.ki && ch.ki.used < ch.ki.max && !tgt.boss && !hasCond(c, tgt, 'stunned') && opts.stun !== false) { ch.ki.used++; const sv = d20().pick + monsterSave(tgt, 'con'); if (sv < 8 + R.prof(ch.level) + R.mod(ch.scores.wis)) opts._stun = true; else parts.push('stun resisted'); }
     if (hasCond(c, t, 'raging') && !ranged && ab === 'str') { dmg += 2; parts.push('2 rage'); }
     if (ch.features.includes('fury_small') && !ch.uses.fury_small) { ch.uses.fury_small = 1; dmg += ch.level; parts.push(`${ch.level} fury of the small`); }
     if (ch.features.includes('surprise_attack') && c.turn.mode === 'combat' && c.turn.round === 1 && !c.turn.res?.surprise) { if (c.turn.res) c.turn.res.surprise = true; const e = rollDice('2d6', crit).total; dmg += e; parts.push(`${e} surprise attack`); }
@@ -591,7 +693,12 @@ function pcAttack(c, ch, t, tgt, w, opts = {}) {
   }
   const txt = `${ch.name} ${ranged ? 'shoots' : 'attacks'} ${tgt.name} with ${w.name}: 🎲 ${r.rolls.join('/')}${fmtMod(hitB)}${bonusTxt} = ${total} vs AC ${ac}${mods.notes.length ? ` (${mods.notes.join(', ')})` : ''} — ${!hit ? (r.pick === 1 ? 'natural 1, miss!' : 'miss!') : crit ? `CRITICAL HIT! ${dmg} damage!` : `hit! ${dmg} damage`}${hit && parts.length > 1 ? ` (${parts.join(' + ')})` : ''}`;
   addLog(c, 'roll', txt, { who: ch.name, uid: ch.ownerId, fx: { k: 'atk', a: t.id, t: tgt.id, d20: r.rolls, pick: r.pick, tot: total, hit, crit, dmg, ranged: !!ranged } });
-  if (dmg) damage(c, tgt, dmg, w.type, { attack: true, weapon: true, magic: !!w.magic || !!w.plus, crit, attacker: t, melee: !ranged });
+  if (dmg) damage(c, tgt, dmg, w.type, { attack: true, weapon: true, magic: !!w.magic || !!w.plus || hasCond(c, t, 'wildshaped'), crit, attacker: t, melee: !ranged });
+  if (!tgt.gone && tgt.hp > 0) {
+    if (opts._prone) { addCond(c, tgt, 'prone', 1, t.id); addLog(c, 'system', `♟️ ${tgt.name} is tripped and falls prone!`); }
+    if (opts._stun) { addCond(c, tgt, 'stunned', 1, t.id); addLog(c, 'system', `💫 ${tgt.name} is STUNNED by ${ch.name}'s strike!`); }
+  }
+  if (hit) c.turn.attackedIds = Object.assign(c.turn.attackedIds || {}, { [tgt.id]: ch.id });
   return { hit, crit, dmg };
 }
 
@@ -599,7 +706,14 @@ function pcAttack(c, ch, t, tgt, w, opts = {}) {
 function monsterAttack(c, m, tgt, a) {
   const ranged = (a.range || 1) > 1 && cheb(m, tgt) > 1;
   const mods = attackRollMods(c, m, tgt, ranged);
-  const r = d20(mods.adv); const total = r.pick + a.hit; const ac = acOf(c, tgt);
+  let r = d20(mods.adv); let total = r.pick + a.hit; let ac = acOf(c, tgt) + (ranged ? coverAC(c, m, tgt) : 0);
+  const tch = charOfToken(c, tgt);
+  if (tch && r.pick !== 20 && total >= ac) {
+    // reactions that can turn a hit into a miss
+    if (tch.spells.includes('shield') && reactOk(c, tgt) && total < ac + 5 && !hasCond(c, tgt, 'wildshaped')) { const sl = tch.slots.findIndex(x => x.max - x.used > 0); if (sl >= 0) { tch.slots[sl].used++; useReact(c, tgt); addCond(c, tgt, 'shielded', 1, tgt.id); ac += 5; addLog(c, 'spell', `🛡️ ${tch.name} snaps up a Shield spell! (+5 AC)`, { who: tch.name, fx: { k: 'buff', t: tgt.id, name: 'Shield' } }); } }
+    if (total >= ac && tch.features.includes('warding_flare') && reactOk(c, tgt) && (tch.uses.warding_flare || 0) < R.FEATURES.warding_flare.uses(tch.level, tch)) { tch.uses.warding_flare = (tch.uses.warding_flare || 0) + 1; useReact(c, tgt); const r2 = d20(); if (r2.pick < r.pick) { r = r2; total = r.pick + a.hit; } addLog(c, 'feature', `☀️ ${tch.name} flashes a Warding Flare in ${m.name}'s eyes!`, { who: tch.name }); }
+    if (total >= ac) { const s0 = scene(c); const bard = s0.tokens.find(o => o.kind === 'pc' && cheb(o, tgt) <= 12 && c.characters[o.charId]?.features.includes('cutting_words') && reactOk(c, o) && c.characters[o.charId].hp > 0 && (c.characters[o.charId].uses.bardic_inspiration || 0) < featureUses(c.characters[o.charId], 'bardic_inspiration')); if (bard && total - ac < 6) { const bc = c.characters[bard.charId]; bc.uses.bardic_inspiration = (bc.uses.bardic_inspiration || 0) + 1; useReact(c, bard); const cw = rollDice('1d6').total; total -= cw; addLog(c, 'feature', `🎵 ${bc.name} shouts Cutting Words at ${m.name}! (–${cw})`, { who: bc.name }); } }
+  }
   const crit = r.pick === 20 || (isHelpless(c, tgt) && cheb(m, tgt) <= 1 && total >= ac); const hit = r.pick !== 1 && (crit || total >= ac);
   consumeAttackConds(c, m, tgt);
   let dmg = 0; let extraTxt = '';
@@ -610,7 +724,7 @@ function monsterAttack(c, m, tgt, a) {
   addLog(c, 'roll', `${m.name} ${ranged ? 'fires at' : 'attacks'} ${tgt.name} (${a.n}): 🎲 ${r.rolls.join('/')}${fmtMod(a.hit)} = ${total} vs AC ${ac}${mods.notes.length ? ` (${mods.notes.join(', ')})` : ''} — ${!hit ? 'miss!' : crit ? `CRITICAL! ${dmg} damage!` : `hit for ${dmg}${extraTxt}`}`, { who: m.name, fx: { k: 'atk', a: m.id, t: tgt.id, d20: r.rolls, pick: r.pick, tot: total, hit, crit, dmg, ranged } });
   if (hit) {
     damage(c, tgt, dmg, a.type, { attack: true, crit, attacker: m, melee: !ranged });
-    if (a.save && isAlive(c, tgt)) { const ch = charOfToken(c, tgt); if (!(a.save.notElf && ch && ch.race === 'Elf')) { const sv = d20().pick + (ch ? saveMod(ch, a.save.ab) : 0); if (sv < a.save.dc) { addCond(c, tgt, a.save.cond, a.save.rounds || 1, m.id); addLog(c, 'system', `${tgt.name} is ${R.CONDITIONS[a.save.cond]?.name.toLowerCase() || a.save.cond}! (${R.ABILITY_NAMES[a.save.ab]} save ${sv} vs DC ${a.save.dc})`); } } }
+    if (a.save && isAlive(c, tgt)) { const ch = charOfToken(c, tgt); if (!(a.save.notElf && ch && ch.race === 'Elf')) { const sv = ch ? pcSave(c, tgt, ch, a.save.ab, a.save.dc, { cond: a.save.cond }).total : d20().pick; if (sv < a.save.dc) { addCond(c, tgt, a.save.cond, a.save.rounds || 1, m.id); addLog(c, 'system', `${tgt.name} is ${R.CONDITIONS[a.save.cond]?.name.toLowerCase() || a.save.cond}! (${R.ABILITY_NAMES[a.save.ab]} save ${sv} vs DC ${a.save.dc})`); } } }
   }
   return hit;
 }
@@ -631,10 +745,13 @@ function runMonsterTurns(c) {
 function monsterTurn(c, m) {
   const s = scene(c); const M = R.BESTIARY[m.mkey] || {}; tickConds(c, m);
   if (M.regen && m.hp > 0 && m.hp < m.maxHp) { if (m.noRegen != null && m.noRegen >= c.turn.round - 1) { addLog(c, 'system', `🔥 ${m.name}'s wounds smoke — it can't regenerate!`); m.noRegen = null; } else { const h = Math.min(M.regen, m.maxHp - m.hp); m.hp += h; addLog(c, 'system', `🩸 ${m.name}'s wounds knit closed (+${h} HP).`, { fx: { k: 'heal', t: m.id, amt: h } }); } }
-  if (isHelpless(c, m)) { addLog(c, 'system', `${m.name} is ${hasCond(c, m, 'asleep') ? 'fast asleep 💤' : 'paralyzed'}.`); return; }
-  const pcs = s.tokens.filter(t => t.kind === 'pc' && isUp(c, t));
+  if (m.banished) return;
+  if (isHelpless(c, m)) { addLog(c, 'system', `${m.name} is ${hasCond(c, m, 'asleep') ? 'fast asleep 💤' : hasCond(c, m, 'stunned') ? 'stunned 💫' : 'paralyzed'}.`); return; }
+  if (hasCond(c, m, 'polymorphed')) { addLog(c, 'system', `🐑 The sheep that used to be ${m.name} goes "Baaa."`); return; }
+  if (hasCond(c, m, 'grappled')) { const g = condsOf(c, m).find(x => x.k === 'grappled'); const holder = s.tokens.find(o => o.id === g.src); if (!holder || cheb(holder, m) > 1 || !isUp(c, holder)) removeCond(c, m, 'grappled'); else { const hc = charOfToken(c, holder); const esc = d20().pick + monsterSave(m, 'str') + 2; const hold = d20().pick + (hc ? skillMod(hc, 'athletics') : 2); if (esc > hold) { removeCond(c, m, 'grappled'); addLog(c, 'system', `🤼 ${m.name} breaks free of ${holder.name}'s grip!`); return; } } }
+  const pcs = s.tokens.filter(t => (t.kind === 'pc' && isUp(c, t)) || (t.kind === 'ally' && t.hp > 0));
   if (!pcs.length) return;
-  let speed = M.speed || 6; if (hasCond(c, m, 'restrained')) speed = 0; if (hasCond(c, m, 'slowed')) speed = Math.floor(speed / 2);
+  let speed = M.speed || 6; if (hasCond(c, m, 'restrained') || hasCond(c, m, 'grappled')) speed = 0; if (hasCond(c, m, 'slowed')) speed = Math.floor(speed / 2);
   if (hasCond(c, m, 'prone')) { removeCond(c, m, 'prone'); speed = Math.floor(speed / 2); }
   // charmed: do nothing hostile
   if (hasCond(c, m, 'charmed')) { addLog(c, 'system', `💗 ${m.name} looks at you fondly and won't attack.`); return; }
@@ -645,7 +762,7 @@ function monsterTurn(c, m) {
     const nearest = pcs.reduce((a, b) => cheb(a, m) < cheb(b, m) ? a : b);
     let best = null, bd = cheb(nearest, m);
     for (let dy = -speed; dy <= speed; dy++) for (let dx = -speed; dx <= speed; dx++) { const x = m.x + dx, y = m.y + dy; if (!walkable(s, x, y) || occupied(s, x, y, m.id)) continue; const p = pathTo(c, s, m, x, y, speed); if (!p) continue; const d = Math.min(...pcs.map(p2 => Math.max(Math.abs(p2.x - x), Math.abs(p2.y - y)))); if (d > bd) { bd = d; best = [x, y]; } }
-    if (best) { m.x = best[0]; m.y = best[1]; }
+    if (best) { provokeFromPCs(c, m, best[0], best[1]); if (m.gone || m.hp <= 0) return; m.x = best[0]; m.y = best[1]; }
     addLog(c, 'system', afraid ? `😱 ${m.name} flees in terror!` : `🏃 ${m.name} tries to run away!`, { fx: { k: 'move', t: m.id } });
     if (cowardly && !afraid && bd >= 6 && rnd(2) === 0) { addLog(c, 'system', `${m.name} escapes into the dark!`); m.gone = true; s.tokens = s.tokens.filter(x => x.id !== m.id); const i = c.turn.order.findIndex(e => e.tokenId === m.id); if (i >= 0) { c.turn.order.splice(i, 1); if (i <= c.turn.index) c.turn.index--; } }
     return;
@@ -663,7 +780,7 @@ function monsterTurn(c, m) {
       if (hits.length < (sp.radius ? (m.boss ? 1 : 2) : 1)) continue;
       m.recharge[sp.n] = false; if (sp.once) m.used[sp.n] = 1;
       addLog(c, 'alert', `${m.name} uses ${sp.n}!`, { fx: { k: 'blast', x: center.x, y: center.y, r: sp.radius || 0, from: m.id } });
-      hits.forEach(p => { const ch = charOfToken(c, p); const sv = d20(null, ch?.race === 'Halfling').pick + (ch ? saveMod(ch, sp.save) : 0); const ok = sv >= sp.dc; let dmg = sp.dice ? rollDice(sp.dice).total : 0; if (ok) dmg = sp.half ? Math.floor(dmg / 2) : 0;
+      hits.forEach(p => { const ch = charOfToken(c, p); const sv = ch ? pcSave(c, p, ch, sp.save, sp.dc, { cond: sp.cond }).total : d20().pick + 1; const ok = sv >= sp.dc; let dmg = sp.dice ? rollDice(sp.dice).total : 0; const ev = ch && sp.save === 'dex' && ch.features.includes('evasion'); if (ok) dmg = ev ? 0 : sp.half ? Math.floor(dmg / 2) : 0; else if (ev && sp.half) dmg = Math.floor(dmg / 2);
         addLog(c, 'roll', `${p.name} ${R.ABILITY_NAMES[sp.save]} save ${sv} vs DC ${sp.dc} — ${ok ? 'resists' : 'fails'}${dmg ? `, ${dmg} ${sp.type || ''} damage` : ''}`, { fx: { k: 'dmg', t: p.id, dmg } });
         if (dmg) damage(c, p, dmg, sp.type || 'force'); if (!ok && sp.cond && isAlive(c, p)) addCond(c, p, sp.cond, sp.rounds || 1, m.id); });
       return;
@@ -690,13 +807,101 @@ function monsterTurn(c, m) {
     }
     if (best) {
       tgt = best.tgt; let spent = 0; const steps = [];
-      for (const [x, y] of best.path) { const cost = MG.DIFFICULT.has(tileAt(s, x, y)) ? 2 : 1; if (spent + cost > speed) break; spent += cost; if (x !== m.x) m.facing = x > m.x ? 1 : -1; m.x = x; m.y = y; steps.push([x, y]); }
+      for (const [x, y] of best.path) { const cost = MG.DIFFICULT.has(tileAt(s, x, y)) ? 2 : 1; if (spent + cost > speed) break; spent += cost; if (x !== m.x) m.facing = x > m.x ? 1 : -1; const stop = provokeFromPCs(c, m, x, y); if (m.gone || m.hp <= 0) return; if (stop) break; m.x = x; m.y = y; steps.push([x, y]); }
       if (steps.length) addLog(c, 'move', '', { fx: { k: 'move', t: m.id, path: steps } });
     }
   }
   if (cheb(tgt, m) <= 1 && melee.length) doAttacks(c, m, tgt, melee, M);
   else if (rangedAtt.length) { const p = pcs.find(p2 => cheb(p2, m) <= rangedAtt[0].range); if (p) doAttacks(c, m, p, rangedAtt, M); else addLog(c, 'system', `${m.name} closes in.`); }
   else addLog(c, 'system', `${m.name} closes in.`);
+}
+// monster leaves a hero's reach -> hero gets a free swing (returns true if the monster is stopped by Sentinel)
+function provokeFromPCs(c, m, nx, ny) {
+  const s = scene(c); let stop = false;
+  for (const p of s.tokens.filter(o => o.kind === 'pc')) {
+    const ch = charOfToken(c, p); if (!ch || ch.dead || ch.hp <= 0 || isHelpless(c, p) || !reactOk(c, p)) continue;
+    if (cheb(p, m) > 1 || Math.max(Math.abs(p.x - nx), Math.abs(p.y - ny)) <= 1) continue;
+    const w = ch.weapons.find(x => !x.ranged) || (hasCond(c, p, 'wildshaped') ? ch.weapons[0] : null); if (!w) continue;
+    useReact(c, p); addLog(c, 'alert', `⚔️ ${m.name} tries to slip past — ${ch.name} gets an opportunity attack!`);
+    const saved = c.turn.res; c.turn.res = { sneak: false, attacked: true, action: 0, bonus: 0, move: 0, attacksLeft: 0 }; let r; try { r = pcAttack(c, ch, p, m, w, { stun: false }); } finally { c.turn.res = saved; }
+    if (r.hit && ch.features.includes('feat_sentinel')) { stop = true; addLog(c, 'system', `🛑 Sentinel! ${m.name} is stopped in its tracks.`); }
+    if (m.gone || m.hp <= 0) return true;
+  }
+  return stop;
+}
+// hero leaves a monster's reach -> monster gets a free swing; returns true if the hero should stop
+function provokeFromMonsters(c, t, nx, ny) {
+  const s = scene(c); const ch = charOfToken(c, t); if (!ch) return false;
+  if (hasCond(c, t, 'disengaged')) return false;
+  for (const m of activeMonsters(c)) {
+    if (cheb(m, t) > 1 || Math.max(Math.abs(m.x - nx), Math.abs(m.y - ny)) <= 1) continue;
+    if (isHelpless(c, m) || hasCond(c, m, 'charmed') || hasCond(c, m, 'polymorphed') || !reactOk(c, m)) continue;
+    if (ch.features.includes('feat_mobile') && c.turn.attackedIds?.[m.id] === ch.id) continue;
+    const a = (R.BESTIARY[m.mkey]?.att || []).find(x => (x.range || 1) <= 1); if (!a) continue;
+    useReact(c, m); addLog(c, 'alert', `⚠️ ${ch.name} turns their back — ${m.name} gets an opportunity attack!`);
+    monsterAttack(c, m, t, a);
+    if (ch.hp <= 0 || ch.dead) return true;
+  }
+  return false;
+}
+// ---------- companions & summons ----------
+function allyToken(c, key, owner, x, y, extra = {}) {
+  const P = R.COMPANIONS[key]; const M = R.BESTIARY[extra.mkey || P.mkey];
+  return Object.assign({ id: uid(4), kind: 'ally', petKey: key, mkey: extra.mkey || P.mkey, name: `${owner.name}'s ${P ? P.name : M.name}`, ownerId: owner.id, x, y, hp: M.hp, maxHp: M.hp, ac: M.ac, conds: [], facing: 1, size: M.size || 1 }, extra);
+}
+function placePets(c, ch) {
+  const s = scene(c); if (!s || ch.dead) return; const t = tokenOfChar(c, ch.id); if (!t) return;
+  (ch.pets || []).filter(p => !p.down).forEach(p => {
+    let a = s.tokens.find(o => o.kind === 'ally' && o.ownerId === ch.id && o.petKey === p.key && !o.summonedBy);
+    if (!a) { const [x, y] = freeSpotNear(s, t.x, t.y); a = allyToken(c, p.key, ch, x, y, { hp: p.hp, maxHp: p.maxHp, name: p.name }); s.tokens.push(a); }
+  });
+}
+function petsFollow(c, ch) {
+  const s = scene(c); const t = tokenOfChar(c, ch.id); if (!s || !t) return;
+  s.tokens.filter(o => o.kind === 'ally' && o.ownerId === ch.id).forEach(o => { if (cheb(o, t) > 2) { const [x, y] = freeSpotNear(s, t.x, t.y, o.id); o.x = x; o.y = y; } });
+}
+function removeAlly(c, t, quiet) {
+  const s = scene(c); if (!s) return; s.tokens = s.tokens.filter(o => o.id !== t.id);
+  const ch = c.characters[t.ownerId];
+  if (!t.summonedBy && ch) { const p = (ch.pets || []).find(p => p.key === t.petKey); if (p) { p.down = true; p.hp = 0; } if (!quiet) addLog(c, 'alert', `${R.COMPANIONS[t.petKey]?.icon || '🐾'} ${t.name} is knocked out!`, { fx: { k: 'down', t: t.id } }); }
+  else if (!quiet) addLog(c, 'system', `${t.name} fades away.`);
+}
+function syncPets(c) { const s = scene(c); if (!s) return; s.tokens.filter(o => o.kind === 'ally' && !o.summonedBy).forEach(o => { const ch = c.characters[o.ownerId]; const p = ch && (ch.pets || []).find(p => p.key === o.petKey); if (p) p.hp = Math.max(0, o.hp); }); }
+function alliesAct(c, ch) {
+  if (!ch) return; const s = scene(c);
+  const mine = s.tokens.filter(o => o.kind === 'ally' && o.ownerId === ch.id && o.hp > 0);
+  for (const a of mine) {
+    if (a.expires && c.turn.round > a.expires) { removeAlly(c, a); continue; }
+    const P = R.COMPANIONS[a.petKey] || {}; const M = R.BESTIARY[a.mkey] || {}; const owner = tokenOfChar(c, ch.id);
+    const foes = activeMonsters(c); if (!foes.length) return;
+    if (P.noFight || P.helper) { // familiars hover next to the hero's target; mounts stay close
+      const tgt = P.helper ? foes.sort((x, y) => cheb(x, owner) - cheb(y, owner))[0] : owner; if (!tgt) continue;
+      const spots = []; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const x = tgt.x + dx, y = tgt.y + dy; if ((dx || dy) && walkable(s, x, y) && !occupied(s, x, y, a.id)) spots.push([x, y]); }
+      if (spots.length) { const [x, y] = spots[0]; a.x = x; a.y = y; addLog(c, 'move', '', { fx: { k: 'move', t: a.id, path: [[x, y]] } }); }
+      continue;
+    }
+    let tgt = foes.sort((x, y) => cheb(x, a) - cheb(y, a))[0];
+    if (cheb(tgt, a) > 1) {
+      let best = null; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const x = tgt.x + dx, y = tgt.y + dy; if ((!dx && !dy) || !walkable(s, x, y) || occupied(s, x, y, a.id)) continue; const p = pathTo(c, s, a, x, y, null); if (p && (!best || p.cost < best.cost)) best = p; }
+      if (best) { const steps = []; let spent = 0; for (const [x, y] of best.path) { if (spent + 1 > (M.speed || 6)) break; spent++; a.facing = x > a.x ? 1 : x < a.x ? -1 : a.facing; a.x = x; a.y = y; steps.push([x, y]); } if (steps.length) addLog(c, 'move', '', { fx: { k: 'move', t: a.id, path: steps } }); }
+    }
+    if (cheb(tgt, a) <= 1) { const at = (M.att || []).find(x => (x.range || 1) <= 1) || (M.att || [])[0]; if (at) { const bonus = Math.floor((ch.level - 1) / 4); monsterAttack(c, a, tgt, Object.assign({}, at, { hit: at.hit + bonus, dmg: at.dmg })); } }
+    if (!activeMonsters(c).length) return;
+  }
+}
+const SURGES = [
+  ['🌸 Flowers sprout from {n}\'s hair for a minute.', null], ['🫧 {n} breathes out a stream of bubbles.', null], ['💙 {n}\'s skin turns bright blue!', null],
+  ['💚 A warm glow heals {n} for 2d8.', 'heal'], ['🫥 {n} turns invisible!', 'invis'], ['🛡️ A shimmering shell gives {n} +2 AC.', 'shield'],
+  ['🌀 {n} blinks to a random spot nearby!', 'tele'], ['⚡ Lightning crackles around {n} — enemies nearby take 1d6!', 'zap'], ['🐸 A frog appears on {n}\'s head. It seems happy.', null], ['🎶 Music plays from nowhere for a minute.', null]
+];
+function wildSurge(c, ch, t) {
+  const [txt, k] = SURGES[rnd(SURGES.length)]; addLog(c, 'feature', `🎲 WILD MAGIC SURGE! ${txt.replace('{n}', ch.name)}`, { who: ch.name, fx: { k: 'buff', t: t.id, name: 'Surge' } });
+  const s = scene(c);
+  if (k === 'heal') heal(c, t, rollDice('2d8').total);
+  if (k === 'invis') addCond(c, t, 'hidden', 2, t.id);
+  if (k === 'shield') addCond(c, t, 'shield_of_faith', 10, t.id);
+  if (k === 'tele') { const [x, y] = freeSpotNear(s, t.x + rnd(7) - 3, t.y + rnd(7) - 3, t.id); t.x = x; t.y = y; }
+  if (k === 'zap') activeMonsters(c).filter(m => cheb(m, t) <= 2).forEach(m => damage(c, m, rollDice('1d6').total, 'lightning', { magic: true }));
 }
 function doAttacks(c, m, tgt, atts, M) {
   const n = M.multi || 1; const list = M.multiAll ? atts.concat((M.att || []).filter(a => !atts.includes(a) && (a.range || 1) <= 1)).slice(0, n) : Array(n).fill(atts[0]);
@@ -726,7 +931,9 @@ function slotFor(ch, lvl, want) {
 function upDice(dice, extra) { if (!extra) return dice; const p = R.parseDice(dice); return `${p.n + extra}d${p.s}${p.b ? fmtMod(p.b) : ''}`; }
 function castSpell(c, ch, t, key, target, opts = {}) {
   const S = R.SPELLS[key]; if (!S) return { error: 'Unknown spell' };
-  const s = scene(c);
+  const s = scene(c); c._lastPc = ch.id;
+  if (hasCond(c, t, 'wildshaped')) return { error: "Bears can't cast spells — leave Wild Shape first" };
+  if (S.noCombat && c.turn.mode === 'combat') return { error: `${S.name} takes too long to cast in a fight` };
   const slot = opts.free ? S.lvl : slotFor(ch, S.lvl, opts.slot);
   if (slot < 0) return { error: `No level ${S.lvl}+ spell slots left` };
   const up = Math.max(0, slot - S.lvl);
@@ -735,6 +942,7 @@ function castSpell(c, ch, t, key, target, opts = {}) {
   let tgts = [];
   const foes = s.tokens.filter(o => o.kind === 'monster' && !o.dormant && !o.gone && o.hp > 0);
   const allies = s.tokens.filter(o => o.kind === 'pc' && isAlive(c, o));
+  if (S.target === 'any') { const tg = s.tokens.find(o => o.id === target?.id && o.kind === 'pc'); if (!tg) return { error: 'Pick a fallen hero' }; const tc = charOfToken(c, tg); if (tc.hp > 0 && !tc.dead) return { error: `${tc.name} is still on their feet` }; if (cheb(t, tg) > (S.range || 1)) return { error: 'Get closer to them' }; }
   if (S.target === 'enemy') { const tg = s.tokens.find(o => o.id === target?.id); if (!tg || tg.kind !== 'monster') return { error: 'Pick an enemy' }; if (cheb(t, tg) > (S.range || 1)) return { error: `Out of range (${S.range} squares)` }; tgts = [tg]; }
   else if (S.target === 'ally') { const tg = s.tokens.find(o => o.id === (target?.id || t.id)); if (!tg || tg.kind !== 'pc') return { error: 'Pick a hero' }; if (cheb(t, tg) > (S.range || 1)) return { error: `Too far — ${S.range === 1 ? 'you must touch them' : S.range + ' squares'}` }; tgts = [tg]; }
   else if (S.target === 'allies') { tgts = allies.filter(o => cheb(o, t) <= S.range).sort((a, b) => hpOf(c, a) / maxHpOf(c, a) - hpOf(c, b) / maxHpOf(c, b)).slice(0, (S.count || 3) + up); }
@@ -742,6 +950,8 @@ function castSpell(c, ch, t, key, target, opts = {}) {
   else if (S.target === 'area') { const x = target?.x, y = target?.y; if (x == null) return { error: 'Pick a spot' }; if (cheb(t, { x, y }) > S.range) return { error: 'Out of range' }; tgts = foes.filter(o => cheb(o, { x, y }) <= S.radius); if (!tgts.length && S.kind !== 'sleep') return { error: 'No enemies in that area' }; }
   else if (S.target === 'tile') { const x = target?.x, y = target?.y; if (x == null || !walkable(s, x, y) || occupied(s, x, y, t.id) || cheb(t, { x, y }) > S.range || s.seen[y * s.w + x] !== '1') return { error: 'Pick an open square you can see within 6' }; }
   if (slot > 0 && !opts.free) ch.slots[slot - 1].used++;
+  if (S.conc) { dropConc(c, ch, ch.conc ? 'switch' : null); ch.conc = { spell: key, cond: S.cond || null, round: c.turn.round }; addCond(c, t, 'concentrating', S.rounds || 10, t.id); }
+  const sp0 = (S.dice && /fire/.test(S.type || '') && ch.features.includes('elemental_affinity') ? Math.max(1, R.mod(ch.scores.cha)) : 0) + (S.dice && ch.features.includes('empowered_evocation') && ['attack', 'save', 'auto'].includes(S.kind) ? Math.max(1, R.mod(ch.scores.int)) : 0);
   const fx = { k: 'spell', a: t.id, name: S.name, spell: key, t: tgts.map(x => x.id), x: target?.x, y: target?.y, r: S.radius || 0, type: S.type || S.kind };
   const lines = [];
   const dmgDice = (d) => S.scale ? R.cantripDice(d, ch.level) : upDice(d, up);
@@ -750,21 +960,22 @@ function castSpell(c, ch, t, key, target, opts = {}) {
     for (let i = 0; i < n; i++) {
       const tg = tgts[0]; if (!tg || tg.gone) break;
       const mods = attackRollMods(c, t, tg, S.range > 1); const r = d20(mods.adv, ch.race === 'Halfling'); let b = 0; if (hasCond(c, t, 'blessed')) b += rollDice('1d4').total;
-      const tot = r.pick + atkB + b; const ac = acOf(c, tg); const crit = r.pick === 20; const hit = r.pick !== 1 && (crit || tot >= ac); consumeAttackConds(c, t, tg);
-      let dmg = 0; if (hit) { dmg = rollDice(dmgDice(S.dice), crit).total + (S.addMod ? castM : 0); const hx = condsOf(c, tg).find(x => x.k === 'hexed' && x.src === t.id); if (hx) dmg += rollDice('1d6').total; }
+      const tot = r.pick + atkB + b; const ac = acOf(c, tg) + (S.range > 1 ? coverAC(c, t, tg) : 0); const crit = r.pick === 20; const hit = r.pick !== 1 && (crit || tot >= ac); consumeAttackConds(c, t, tg);
+      let dmg = 0; if (hit) { dmg = rollDice(dmgDice(S.dice), crit).total + (S.addMod ? castM : 0) + sp0 + (key === 'eldritch_blast' && ch.features.includes('agonizing_blast') ? Math.max(0, R.mod(ch.scores.cha)) : 0); const hx = condsOf(c, tg).find(x => x.k === 'hexed' && x.src === t.id); if (hx) dmg += rollDice('1d6').total; }
       lines.push(`${tg.name}: 🎲 ${r.rolls.join('/')}${fmtMod(atkB)} = ${tot} vs AC ${ac} — ${hit ? (crit ? `CRIT! ${dmg}` : `${dmg}`) + ' ' + (S.type || '') + ' damage' : 'miss'}`);
       fx.hit = hit; fx.dmg = (fx.dmg || 0) + dmg;
-      if (dmg) damage(c, tg, dmg, S.type, { crit, magic: true });
+      if (dmg) damage(c, tg, dmg, S.type, { crit, magic: true, attacker: t });
+      if (dmg && S.drain) { const h = heal(c, t, Math.floor(dmg / 2)); if (h) lines.push(`${ch.name} drains ${h} HP`); }
       if (hit && S.cond && !tg.gone) addCond(c, tg, S.cond, S.rounds || 1, t.id);
       if (hit && S.pull && !tg.gone) { for (let k = 0; k < S.pull; k++) { const nx = tg.x + Math.sign(t.x - tg.x), ny = tg.y + Math.sign(t.y - tg.y); if (cheb({ x: nx, y: ny }, t) >= 1 && walkable(s, nx, ny) && !occupied(s, nx, ny, tg.id)) { tg.x = nx; tg.y = ny; } } }
     }
   } else if (S.kind === 'save') {
     tgts.forEach(tg => {
       const sv = d20().pick + monsterSave(tg, S.save); const ok = sv >= dc; let dice = S.dice; if (S.woundedDice && tg.hp < tg.maxHp) dice = S.woundedDice;
-      let dmg = rollDice(dmgDice(dice)).total; if (ok) dmg = S.half ? Math.floor(dmg / 2) : 0;
+      let dmg = dice ? rollDice(dmgDice(dice)).total + sp0 : 0; if (ok) dmg = S.half ? Math.floor(dmg / 2) : 0;
       lines.push(`${tg.name} ${S.save.toUpperCase()} save ${sv} vs DC ${dc} — ${ok ? (dmg ? `half: ${dmg}` : 'dodges it') : `${dmg} ${S.type || ''} damage`}`);
       fx.dmg = (fx.dmg || 0) + dmg;
-      if (dmg) damage(c, tg, dmg, S.type, { magic: true });
+      if (dmg) damage(c, tg, dmg, S.type, { magic: true, attacker: t });
       if (!ok && !tg.gone) { if (S.cond) addCond(c, tg, S.cond, S.rounds || 1, t.id); if (S.push) { for (let k = 0; k < S.push; k++) { const nx = tg.x + Math.sign(tg.x - t.x), ny = tg.y + Math.sign(tg.y - t.y); if (walkable(s, nx, ny) && !occupied(s, nx, ny, tg.id)) { tg.x = nx; tg.y = ny; } } } }
     });
   } else if (S.kind === 'auto') {
@@ -772,9 +983,11 @@ function castSpell(c, ch, t, key, target, opts = {}) {
     for (let i = 0; i < n && !tg.gone; i++) { const d = rollDice(S.dice).total; total += d; }
     lines.push(`${n} glowing darts slam into ${tg.name} for ${total} force damage`); fx.dmg = total; fx.hit = true; damage(c, tg, total, 'force', { magic: true });
   } else if (S.kind === 'heal') {
-    tgts.forEach(tg => { const amt = rollDice(upDice(S.dice, up)).total + (S.addMod ? castM : 0); const got = heal(c, tg, Math.max(1, amt)); lines.push(`${tg.name} heals ${got} HP`); fx.heal = (fx.heal || 0) + got; });
+    const life = ch.features.includes('disciple_of_life') ? 2 + slot : 0;
+    tgts.forEach(tg => { const amt = rollDice(upDice(S.dice, up)).total + (S.addMod ? castM : 0) + life; const got = heal(c, tg, Math.max(1, amt)); if (S.cleanse) cleanse(c, tg, true); lines.push(`${tg.name} heals ${got} HP`); fx.heal = (fx.heal || 0) + got; });
+    if (life && ch.features.includes('blessed_healer') && tgts.some(x => x.id !== t.id)) { const g = heal(c, t, life); if (g) lines.push(`${ch.name} is healed ${g} too`); }
   } else if (S.kind === 'buff') {
-    tgts.forEach(tg => { addCond(c, tg, S.cond, S.rounds || 10, t.id); if (S.temp) { const cht = charOfToken(c, tg); if (cht) cht.temp = Math.max(cht.temp || 0, S.temp + up * 5); } lines.push(`${tg.name} is ${R.CONDITIONS[S.cond]?.name || S.cond}`); });
+    tgts.forEach(tg => { addCond(c, tg, S.cond, S.rounds || 10, t.id, S.lasting ? { lasting: true } : null); if (S.temp) { const cht = charOfToken(c, tg); if (cht) cht.temp = Math.max(cht.temp || 0, S.temp + up * 5); } lines.push(`${tg.name} is ${R.CONDITIONS[S.cond]?.name || S.cond}`); });
   } else if (S.kind === 'debuff') {
     tgts.forEach(tg => {
       if (S.humanoid && !isHumanoid(tg)) { lines.push(`${tg.name} isn't humanoid — no effect`); return; }
@@ -788,6 +1001,21 @@ function castSpell(c, ch, t, key, target, opts = {}) {
     const slept = []; for (const o of cands) { if (o.hp > pool) break; pool -= o.hp; addCond(c, o, 'asleep', 10, t.id); slept.push(o.name); }
     fx.t = cands.filter(o => slept.includes(o.name)).map(o => o.id);
     lines.push(slept.length ? `💤 ${slept.join(', ')} fall${slept.length === 1 ? 's' : ''} asleep! (${start} HP of sleep)` : `The sleep magic (${start} HP) isn't enough for anything there.`);
+  } else if (S.kind === 'summon') {
+    const n = (S.count || 1) + (up ? Math.floor(up / 2) : 0); const made = [];
+    for (let i = 0; i < n; i++) { const [x, y] = freeSpotNear(s, t.x, t.y); const M = R.BESTIARY[S.summon]; const a = allyToken(c, null, ch, x, y, { mkey: S.summon, name: `Spirit ${M.name}`, summonedBy: ch.id, expires: c.turn.round + (S.rounds || 10), petKey: 'summon' }); s.tokens.push(a); made.push(a); }
+    lines.push(`${made.length} ${R.BESTIARY[S.summon].name}${made.length > 1 ? 's' : ''} answer the call!`); fx.t = made.map(a => a.id);
+  } else if (S.kind === 'revive') {
+    const tg = s.tokens.find(o => o.id === target.id); const tc = charOfToken(c, tg);
+    tc.dead = false; tc.deathFails = 0; tc.deathSaves = 0; tc.stable = false; tc.hp = S.hp === 'full' ? tc.maxHp : S.hp === 'half' ? Math.ceil(tc.maxHp / 2) : 1;
+    lines.push(`✨ ${tc.name} gasps back to life with ${tc.hp} HP!`); fx.heal = tc.hp; fx.t = [tg.id];
+    if (c.turn.mode === 'combat' && !c.turn.order.some(e => e.charId === tc.id)) c.turn.order.push({ kind: 'pc', charId: tc.id, init: 0 });
+  } else if (S.kind === 'cleanse') {
+    tgts.forEach(tg => { const n = cleanse(c, tg, S.all); lines.push(n ? `${tg.name} is cured (${n})` : `${tg.name} had nothing to cure`); });
+  } else if (S.kind === 'banish') {
+    tgts.forEach(tg => { const sv = d20().pick + monsterSave(tg, S.save); if (sv >= dc) { lines.push(`${tg.name} resists (${sv} vs DC ${dc})`); return; } tg.banished = true; tg.banishedBy = ch.id; const i = c.turn.order.findIndex(e => e.tokenId === tg.id); if (i >= 0) { c.turn.order.splice(i, 1); if (i < c.turn.index) c.turn.index--; } lines.push(`🌀 ${tg.name} vanishes into another plane!`); });
+  } else if (S.kind === 'pwk') {
+    const tg = tgts[0]; if (tg.hp <= 100) { lines.push(`☠️ ${tg.name} simply... stops.`); damage(c, tg, tg.hp + 50, 'psychic', { magic: true, attacker: t }); } else lines.push(`${tg.name} is too powerful (over 100 HP)`);
   } else if (S.kind === 'teleport') {
     t.x = target.x; t.y = target.y; lines.push(`${ch.name} vanishes in silver mist and reappears`); updateVision(c);
   } else if (S.kind === 'utility') {
@@ -795,8 +1023,11 @@ function castSpell(c, ch, t, key, target, opts = {}) {
     if (S.reveal) { let found = 0; s.pois.forEach(p => { if (p.hidden && cheb(p, t) <= 6) { p.hidden = false; p.found = true; found++; } }); s.tokens.forEach(o => { if (o.disguise && cheb(o, t) <= 6) { o.revealed = true; found++; } }); lines.push(found ? `✨ ${ch.name} senses ${found} hidden thing${found > 1 ? 's' : ''} nearby!` : 'No hidden magic nearby.'); }
   }
   addLog(c, 'spell', `✨ ${ch.name} casts ${S.name}${slot > 0 ? ` (level ${slot})` : ''}${lines.length ? ': ' + lines.join('; ') : ''}`, { who: ch.name, uid: ch.ownerId, fx });
+  if (slot > 0 && ch.features.includes('arcane_ward')) { const w = 2 * ch.level + R.mod(ch.scores.int); if ((ch.temp || 0) < w) { ch.temp = w; addLog(c, 'system', `🛡️ ${ch.name}'s Arcane Ward shimmers (${w} temp HP).`); } }
+  if (slot > 0 && ch.features.includes('wild_surge') && rnd(5) === 0) wildSurge(c, ch, t);
   return { ok: true };
 }
+function cleanse(c, t, all) { const bad = all ? ['poisoned', 'paralyzed', 'blinded', 'charmed', 'frightened', 'restrained', 'slowed', 'stunned', 'hexed', 'mocked', 'grappled'] : ['poisoned', 'paralyzed', 'blinded']; const cs = condsOf(c, t); const gone = cs.filter(x => bad.includes(x.k)).map(x => R.CONDITIONS[x.k]?.name || x.k); for (let i = cs.length - 1; i >= 0; i--) if (bad.includes(cs[i].k)) cs.splice(i, 1); return gone.join(', '); }
 function monsterSave(t, ab) { if (t.kind === 'pc') return 0; const M = R.BESTIARY[t.mkey] || {}; let b = M.boss ? 4 : 1; if ((M.size || 1) > 1 && (ab === 'str' || ab === 'con')) b += 2; if (M.type === 'undead' && ab === 'wis') b += 1; if (ab === 'dex' && M.type === 'ooze') b -= 2; return b; }
 
 // ---------------- items ----------------
@@ -834,12 +1065,17 @@ function lootChest(c, ch, poi) {
   addLog(c, 'loot', `📦 ${ch.name} opens the ${poi.name}: ${got.length ? got.join(', ') : 'empty...'}!`, { who: ch.name, fx: { k: 'loot', x: poi.x, y: poi.y }, items: got });
 }
 function rollCheck(c, ch, t, skillOrAb, label, dc, advIn) {
-  const isSkill = !!R.SKILLS[skillOrAb]; const m = isSkill ? skillMod(ch, skillOrAb) : R.mod(ch.scores[skillOrAb]);
+  const isSkill = !!R.SKILLS[skillOrAb]; let m = isSkill ? skillMod(ch, skillOrAb) : R.mod(ch.scores[skillOrAb]);
+  const trained = isSkill && ch.skills.includes(skillOrAb); const abOf = isSkill ? R.SKILLS[skillOrAb] : skillOrAb;
+  if (!trained && ch.features.includes('jack_of_all_trades')) m += Math.floor(R.prof(ch.level) / 2);
+  else if (!trained && ch.features.includes('remarkable_athlete') && ['str', 'dex', 'con'].includes(abOf)) m += Math.ceil(R.prof(ch.level) / 2);
+  if (ch.features.includes('feat_observant') && ['perception', 'investigation'].includes(skillOrAb)) m += 5;
   let a = 0, d = 0; if (advIn === 'adv') a++; if (advIn === 'dis') d++;
   if (isSkill && ch.features.includes('kenku_recall') && ch.skills.includes(skillOrAb)) a++;
   if (isSkill && ch.features.includes('shapechanger') && ['deception', 'persuasion', 'performance'].includes(skillOrAb)) a++;
   if (t && ['poisoned', 'frightened'].some(k => hasCond(c, t, k))) d++; if (t && hasCond(c, t, 'helped')) { a++; removeCond(c, t, 'helped'); }
-  const r = d20(advOf(a, d), ch.race === 'Halfling'); let bonus = 0; let btxt = '';
+  if (ch.features.includes('aspect_bear') && abOf === 'str') a++;
+  const r = d20(advOf(a, d), ch.race === 'Halfling'); if (trained && ch.features.includes('reliable_talent') && r.pick < 10) { r.pick = 10; r.rolls = r.rolls.concat(['→10']); } let bonus = 0; let btxt = '';
   const insp = t && condsOf(c, t).find(x => x.k === 'inspired'); if (insp) { const b = rollDice('1d6').total; bonus += b; btxt = ` +${b}🎵`; removeCond(c, t, 'inspired'); }
   const total = r.pick + m + bonus; const ok = dc ? total >= dc : null;
   addLog(c, 'roll', `🎲 ${ch.name} — ${label}: ${r.rolls.join('/')}${fmtMod(m)}${btxt} = ${total}${r.pick === 20 ? ' (NAT 20!)' : r.pick === 1 ? ' (nat 1…)' : ''}${dc ? (ok ? ` ✅ vs DC ${dc}` : ` ❌ vs DC ${dc}`) : ''}`, { who: ch.name, uid: ch.ownerId, fx: { k: 'check', d20: r.rolls, pick: r.pick, tot: total, ok, uid: ch.ownerId } });
@@ -894,6 +1130,7 @@ function interact(c, ch, t, poi) {
   }
   if (poi.type === 'exit') {
     if (c.turn.mode === 'combat') return { error: 'You can\'t leave in the middle of a fight!' };
+    if (poi.to === '__world') return { ok: true, world: true };
     if (poi.needs && !partyHas(c, poi.needs)) { addLog(c, 'clue', poi.lockedText || 'The way is blocked.', { who: poi.name }); return { ok: true }; }
     if (poi.quest) { const q = c.quests.find(x => x.id === poi.quest); if (q && q.status === 'hidden') { addLog(c, 'system', `🚪 ${poi.name}: it's locked. Maybe ask around town first.`); return { ok: true }; } }
     if (poi.needs === 'tide_chant' && !c.flags.tideParted) { c.flags.tideParted = true; addLog(c, 'narration', `${ch.name} unrolls the Tide-Chant and sings. The words taste of salt. Slowly — impossibly — the sea draws back like a curtain, revealing a slick black causeway leading to the lighthouse.`, { who: 'The Tide-Chant' }); }
@@ -986,7 +1223,7 @@ function greeting(n) { return pick([`Hello there. I'm ${n.name}, ${n.role.toLowe
 // ---------------- rests & leveling ----------------
 function longRest(c) {
   Object.values(c.characters).forEach(ch => {
-    if (ch.dead) return; ch.hp = ch.maxHp; ch.temp = 0; ch.slots.forEach(s => s.used = 0); ch.uses = {}; if (ch.features.includes('lay_on_hands')) ch.pool = 5 * ch.level; if (ch.ki) ch.ki.used = 0;
+    if (ch.dead) return; ch.hp = ch.maxHp; ch.temp = 0; ch.slots.forEach(s => s.used = 0); ch.uses = {}; if (ch.features.includes('lay_on_hands')) ch.pool = 5 * ch.level; if (ch.ki) ch.ki.used = 0; if (ch.sup) ch.sup.used = 0; (ch.pets || []).forEach(p => { p.down = false; p.hp = p.maxHp; }); dropConc(c, ch);
     ch.hitDice = Math.min(ch.level, (ch.hitDice || 0) + Math.max(1, Math.floor(ch.level / 2))); ch.conds = []; ch.deathFails = 0; ch.deathSaves = 0; ch.stable = false;
   });
   c.shortRests = 0; addLog(c, 'rest', '🌙 The party takes a long rest. HP, spells and abilities restored.', { fx: { k: 'healall' } });
@@ -998,7 +1235,9 @@ function shortRest(c) {
     Object.keys(ch.uses).forEach(k => { if (R.FEATURES[k]?.rest === 'short') delete ch.uses[k]; });
     if (C.caster === 'pact') ch.slots.forEach(s => s.used = 0);
     if (ch.features.includes('arcane_recovery') && !ch.uses.arcane) { const s = ch.slots.find(x => x.used > 0); if (s) { s.used--; ch.uses.arcane = 1; } }
-    if (ch.ki) ch.ki.used = 0;
+    if (ch.ki) ch.ki.used = 0; if (ch.sup) ch.sup.used = 0;
+    if (ch.features.includes('natural_recovery') && !ch.uses.natrec) { const s = ch.slots.find(x => x.used > 0); if (s) { s.used--; ch.uses.natrec = 1; } }
+    if (ch.features.includes('feat_durable') && ch.hp < ch.maxHp) ch.hp = Math.min(ch.maxHp, Math.max(ch.hp, 2 * Math.max(1, R.mod(ch.scores.con))));
   });
   c.shortRests++; addLog(c, 'rest', '☕ The party takes a short rest, binds wounds and catches their breath.', { fx: { k: 'healall' } });
 }
@@ -1007,14 +1246,17 @@ function levelUp(c, ch) {
   const C = R.CLASSES[ch.class]; const before = { features: ch.features.slice(), spells: ch.spells.slice(), slots: ch.slots.map(s => s.max) };
   let gained = 0;
   while (ch.level < target) {
-    ch.level++; const g = Math.max(1, Math.floor(C.hitDie / 2) + 1 + R.mod(ch.scores.con)); ch.maxHp += g; ch.hp += g; gained += g; ch.hitDice = (ch.hitDice || 0) + 1;
-    if ([4, 8, 12, 16, 19].includes(ch.level)) { const a = C.primary; const inc = Math.min(2, 20 - ch.scores[a]); ch.base[a] += inc; ch.scores[a] += inc; if (inc < 2) { ch.scores.con = Math.min(20, ch.scores.con + (2 - inc)); ch.base.con += 2 - inc; } }
+    ch.level++; const g = Math.max(1, Math.floor(C.hitDie / 2) + 1 + R.mod(ch.scores.con)) + (ch.features.includes('feat_tough') ? 2 : 0) + (ch.features.includes('draconic_resilience') ? 1 : 0); ch.maxHp += g; ch.hp += g; gained += g; ch.hitDice = (ch.hitDice || 0) + 1;
+    ch.choices = ch.choices || [];
+    if (ch.level === 3 && !ch.subclass && R.SUBCLASSES[ch.class]) ch.choices.push({ t: 'subclass' });
+    if ([4, 8, 12, 16, 19].includes(ch.level) || (ch.class === 'Fighter' && [6, 14].includes(ch.level)) || (ch.class === 'Rogue' && ch.level === 10)) ch.choices.push({ t: 'asi', lvl: ch.level });
     if (ch.features.includes('lay_on_hands')) ch.pool = (ch.pool || 0) + 5;
   }
   refreshClass(ch); ch.levelUpReady = false;
+  if (R.KNOWN[ch.class]) { const want = R.knownCount(ch.class, ch.level); const have = (ch.known || []).length; const pend = (ch.choices || []).filter(x => x.t === 'spells').reduce((a, x) => a + x.n, 0); const n = want - have - pend; const pool = R.classSpells(ch.class, ch.level).filter(k => R.SPELLS[k].lvl > 0 && !(ch.known || []).includes(k)); if (n > 0 && pool.length) ch.choices.push({ t: 'spells', n: Math.min(n, pool.length) }); }
   const newF = ch.features.filter(f => !before.features.includes(f)).map(f => R.FEATURES[f]?.name || f);
   const newS = ch.spells.filter(s => !before.spells.includes(s)).map(s => R.SPELLS[s].name);
-  const summary = { level: ch.level, hp: gained, features: newF, spells: newS, slots: ch.slots.map(s => s.max) };
+  const summary = { level: ch.level, hp: gained, features: newF, spells: newS, slots: ch.slots.map(s => s.max), choices: (ch.choices || []).length };
   addLog(c, 'levelup', `⭐ ${ch.name} reaches level ${ch.level}! +${gained} max HP${newF.length ? '. New: ' + newF.join(', ') : ''}${newS.length ? '. Spells: ' + newS.join(', ') : ''}`, { who: ch.name, fx: { k: 'levelup', charId: ch.id } });
   return summary;
 }
@@ -1036,7 +1278,7 @@ function unequip(c, ch, what, i) {
   ch.ac = R.computeAC(ch); return { ok: true };
 }
 
-module.exports = { canSwim, raceFeats,
+module.exports = { EV, monsterSave, rnd, cleanse, canSwim, raceFeats, placePets, newPet, dropConc, pcSave, provokeFromMonsters, alliesAct, allyToken, removeAlly, wildSurge, reactOk, useReact, coverAC, syncPets,
   cleanLook, setHooks, uid, now, rollDice, d20, addLog, newCampaign, buildCharacter, refreshClass, makeWeapon, featureUses, attacksPerAction, spellAtk, spellDC, skillMod, saveMod, passivePerception,
   invFind, invAdd, invRemove, partyHas, scene, pcTokens, tokenOfChar, charOfToken, tileAt, walkable, occupied, freeSpotNear, buildScene, enterScene, updateVision, wakeEncounter,
   event, offerQuest, completeQuest, giveXp, condsOf, hasCond, addCond, removeCond, isHelpless, hpOf, acOf, isAlive, isUp, damage, heal, killMonster, monsterToken,

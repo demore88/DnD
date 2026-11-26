@@ -27,6 +27,7 @@
   }
   function closeSheet() { sheetRoot.innerHTML = ''; }
   const sheetOpen = () => !!sheetRoot.innerHTML;
+  document.addEventListener('pointerdown', (e) => { if (typeof SOUND !== 'undefined' && e.target.closest && e.target.closest('button, .opt, .chip')) SOUND.sfx('tap'); }, { passive: true });
   function logout() { localStorage.removeItem('rc_token'); S.token = null; S.me = null; if (S.ws) S.ws.close(); showSplash(true); }
   const svgImg = (svg, cls = '') => `<span class="pic ${cls}">${svg}</span>`;
   function gearOf(ch) {
@@ -122,42 +123,75 @@
       if ($('#loginSlot .login')) return;
       $('#loginSlot').innerHTML = `<div class="login card"><label>Adventurer name</label><input id="ln" autocomplete="username" maxlength="24" autocapitalize="off">
         <label>Password</label><input id="lp" type="password" autocomplete="current-password">
-        <div class="row" style="margin-top:12px"><button class="btn green grow" id="bLogin">Log in</button><button class="btn ghost grow" id="bReg">I'm new</button></div></div>`;
-      const go = async (reg) => { try { const r = await api(reg ? '/register' : '/login', { name: $('#ln').value, pass: $('#lp').value }); S.token = r.token; localStorage.setItem('rc_token', r.token); start(); } catch (e) { toast(e.message, 'err'); } };
+        <div class="row" style="margin-top:12px"><button class="btn green grow" id="bLogin">Log in</button><button class="btn ghost grow" id="bReg">I'm new</button></div><button class="linkbtn" id="bForgot">Forgot your password?</button></div>`;
+      const go = async (reg) => { try { const r = await api(reg ? '/register' : '/login', { name: $('#ln').value, pass: $('#lp').value }); S.token = r.token; localStorage.setItem('rc_token', r.token); start(); if (r.recovery) setTimeout(() => recoverySheet(r.recovery, true), 600); } catch (e) { toast(e.message, 'err'); } };
+      $('#bForgot').onclick = resetSheet;
       $('#bLogin').onclick = () => go(false); $('#bReg').onclick = () => go(true); $('#lp').onkeydown = (e) => { if (e.key === 'Enter') go(false); };
     };
     if (skip) showLogin(); else { setTimeout(showLogin, 2600); app.onclick = () => { app.onclick = null; showLogin(); }; }
   }
 
+  function recoverySheet(code, fresh) {
+    sheet(`<h2>🔑 Your recovery code</h2><p>${fresh ? 'Welcome, adventurer! ' : ''}If you ever forget your password, this code lets you reset it. <b>Write it down</b> or ask a grown-up to keep it safe.</p><div class="recode">${esc(code)}</div><button class="btn ghost block" id="rcCopy">📋 Copy</button><button class="btn gold block lg" data-close>I saved it</button>`, (m) => {
+      $('#rcCopy', m).onclick = () => { try { navigator.clipboard.writeText(code); toast('Copied'); } catch (e) { } }; $$('[data-close]', m).forEach(b => b.onclick = closeSheet);
+    });
+  }
+  function resetSheet() {
+    sheet(`<h2>🔑 Reset password</h2><label>Adventurer name</label><input id="rsN" maxlength="24" autocapitalize="off"><label>Recovery code</label><input id="rsC" placeholder="ABCD-EFGH-JKLM" autocapitalize="characters"><label>New password</label><input id="rsP" type="password"><button class="btn green block lg" id="rsGo">Reset</button><div class="small muted">No code? Ask the person who made your campaign — they can't see your password, but you can always make a new account and rejoin with the party code.</div>`, (m) => {
+      $('#rsGo', m).onclick = async () => { try { const r = await api('/reset', { name: $('#rsN', m).value, code: $('#rsC', m).value, pass: $('#rsP', m).value }); S.token = r.token; localStorage.setItem('rc_token', r.token); closeSheet(); start(); setTimeout(() => recoverySheet(r.recovery), 600); } catch (e) { toast(e.message, 'err'); } };
+    });
+  }
+  function accountSheet() {
+    sheet(`<h2>⚙️ Account</h2><div class="small muted">Signed in as <b>${esc(S.me?.name || '')}</b></div>
+      <h3>Change password</h3><input id="acO" type="password" placeholder="Current password"><input id="acN" type="password" placeholder="New password"><button class="btn blue block" id="acGo">Change password</button>
+      <button class="btn ghost block" id="acRec">🔑 Make a new recovery code</button>
+      <h3>🔊 Sound</h3>${typeof SOUND !== 'undefined' ? SOUND.settingsHTML() : ''}
+      <h3>🎼 Your music</h3><div class="small muted">Upload your own tracks. They replace the built-in music in every campaign <b>you</b> create, for everyone at the table.</div><div id="musList" class="small muted">Loading…</div>
+      <button class="btn red block" id="acOut">Log out</button>`, (m) => {
+      $('#acGo', m).onclick = async () => { try { await api('/password', { old: $('#acO', m).value, pass: $('#acN', m).value }); toast('Password changed'); closeSheet(); } catch (e) { toast(e.message, 'err'); } };
+      $('#acRec', m).onclick = async () => { try { const r = await api('/recovery', {}); recoverySheet(r.recovery); } catch (e) { toast(e.message, 'err'); } };
+      $('#acOut', m).onclick = () => { closeSheet(); logout(); };
+      if (typeof SOUND !== 'undefined') SOUND.bindSettings(m);
+      const MN = { town: '🏘️ Town', explore: '🌲 Exploring', dungeon: '🕯️ Dungeon', combat: '⚔️ Combat', boss: '🐉 Boss fight' };
+      const drawMus = (mu) => { $('#musList', m).innerHTML = `<ul class="list">${Object.keys(MN).map(k => `<li><span>${MN[k]}</span><span>${mu[k] ? `<button class="chip" data-mplay="${k}">▶️</button><button class="chip" data-mdel="${k}">✕</button>` : ''}<label class="chip">${mu[k] ? 'Replace' : '⬆️ Upload'}<input type="file" accept="audio/*" data-mup="${k}" hidden></label></span></li>`).join('')}</ul>`;
+        $$('[data-mup]', m).forEach(inp => inp.onchange = async () => { const f = inp.files[0]; if (!f) return; if (f.size > 40e6) return toast('Max 40 MB per track', 'err'); toast('Uploading…'); try { const r = await fetch('/api/music/' + inp.dataset.mup, { method: 'POST', headers: { authorization: 'Bearer ' + S.token, 'content-type': f.type || 'audio/mpeg' }, body: f }); const j = await r.json(); if (!r.ok) throw new Error(j.error); toast('🎵 Saved'); drawMus(j.music); } catch (e) { toast(e.message, 'err'); } });
+        $$('[data-mdel]', m).forEach(b => b.onclick = async () => { const r = await fetch('/api/music/' + b.dataset.mdel, { method: 'DELETE', headers: { authorization: 'Bearer ' + S.token } }); drawMus((await r.json()).music); });
+        $$('[data-mplay]', m).forEach(b => b.onclick = () => { if (S.prev) { S.prev.pause(); S.prev = null; return; } S.prev = new Audio(mu[b.dataset.mplay]); S.prev.play(); }); };
+      api('/music').then(r => drawMus(r.music)).catch(() => { $('#musList', m).textContent = 'Could not load.'; });
+    });
+  }
+
   // ---------------- home ----------------
   async function loadHome() { try { const r = await api('/me'); S.me = r.user; S.campaigns = r.campaigns; S.aiReady = r.aiReady; if (S.view === 'home') renderHome(); } catch (e) { } }
-  function showHome() { S.view = 'home'; S.C = null; BOARD.redraw(); if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ t: 'sub', campaignId: null })); history.replaceState(null, '', '/'); renderHome(); loadHome(); }
+  function showHome() { S.view = 'home'; S.C = null; if (typeof SOUND !== 'undefined') SOUND.update(null); BOARD.redraw(); if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ t: 'sub', campaignId: null })); history.replaceState(null, '', '/'); renderHome(); loadHome(); }
   function renderHome() {
     const me = S.me || {}; const pushOn = me.push && 'Notification' in window && Notification.permission === 'granted';
-    app.innerHTML = `<div class="home"><div class="home-top"><div class="brand">⚔️ Roll Call</div><button class="chip" id="bOut">${esc(me.name || '')} · log out</button></div>
-      ${pushOn ? '' : `<div class="card banner gold"><div class="grow"><b>🔔 Turn alerts</b><div class="small">Get pinged when it's your move.</div></div><button class="btn dark sm" id="bPush">Turn on</button></div>`}
+    app.innerHTML = `<div class="home"><div class="home-top"><div class="brand">⚔️ Roll Call</div><button class="chip" id="bOut">⚙️ ${esc(me.name || '')}</button></div>
+      ${isIOS && !standalone ? `<div class="card banner blue"><div class="grow"><b>📲 Install Roll Call</b><div class="small">On iPhone, turn alerts only work from the Home Screen: tap <b>Share ⬆️</b> then <b>Add to Home Screen</b>, and open it from there.</div></div></div>` : ''}
+      ${pushOn || (isIOS && !standalone) ? '' : `<div class="card banner gold"><div class="grow"><b>🔔 Turn alerts</b><div class="small">Get pinged when it's your move.</div></div><button class="btn dark sm" id="bPush">Turn on</button></div>`}
       ${S.campaigns.length ? S.campaigns.map(c => `<button class="card camp" data-open="${c.id}">
           <div class="camp-pic">${c.hero ? ART.heroSVG(c.hero.look, c.hero.cls, null, 58) : `<span class="seal">${c.dmMode === 'ai' ? '🤖' : '🎭'}</span>`}</div>
           <div class="grow left"><div class="camp-name">${esc(c.name)}</div><div class="small muted">${esc(c.adventure || '')}${c.scene ? ' · 📍 ' + esc(c.scene) : ''}</div>
           <div class="small">${c.status !== 'active' ? '<span class="tag">Gathering party · ' + c.code + '</span>' : c.myTurn ? `<span class="tag hot">${c.mode === 'combat' ? '⚔️ YOUR TURN' : '🎲 YOUR MOVE'}</span>` : c.dmTurn ? '<span class="tag blue">📜 DM needed</span>' : `<span class="muted">Waiting on ${esc(c.current)}</span>`}</div></div><b class="chev">›</b></button>`).join('')
         : `<div class="card center empty"><div class="emptyart">${ART.monsterSVG('mimic', 110)}</div><h2>No adventures yet</h2><p class="muted">Start a campaign and share the code with your friends — or join theirs.</p></div>`}
       </div><div class="dock"><button class="btn green grow" id="bNew">＋ New campaign</button><button class="btn blue grow" id="bJoin">Join with code</button></div>`;
-    $('#bOut').onclick = logout; if ($('#bPush')) $('#bPush').onclick = enablePush;
+    $('#bOut').onclick = accountSheet; if ($('#bPush')) $('#bPush').onclick = enablePush;
     $$('[data-open]').forEach(el => el.onclick = () => openCampaign(el.dataset.open));
     $('#bNew').onclick = newCampaignSheet; $('#bJoin').onclick = joinSheet;
   }
   function newCampaignSheet() {
-    const st = { dm: 'ai', pace: 'async', adv: 'bell' };
+    const st = { dm: 'ai', pace: 'async', adv: 'bell', level: 'teen' };
     sheet(`<h2>New campaign</h2>
       <label>Name</label><input id="cn" placeholder="Friday Night Heroes" maxlength="60">
       <label>Adventure</label><div class="opts" id="advc"><button class="opt on" data-v="bell"><b>🔔 The Drowned Bell</b><span>A haunted fishing town, missing fishermen, smugglers and a sunken lighthouse. Built in, ready to play.</span></button><button class="opt" data-v="custom" ${S.aiReady ? '' : 'disabled'}><b>✨ Your own idea</b><span>${S.aiReady ? 'Describe it and the AI DM writes the whole adventure.' : 'Needs the AI key on the server.'}</span></button></div>
       <textarea id="cp" rows="3" class="hidden" placeholder="e.g. A wizard school where the statues come alive at night..."></textarea>
       <label>Dungeon Master</label><div class="opts two" id="dmc"><button class="opt on" data-v="ai"><b>🤖 AI DM</b><span>Runs the story. You can take over any time.</span></button><button class="opt" data-v="human"><b>🎭 I'll DM</b><span>You run it with DM tools.</span></button></div>
+      <label>Story style</label><div class="opts two" id="sfc"><button class="opt" data-v="family"><b>👪 Family</b><span>Ages 8+. Spooky-fun, no gore, foes get knocked out.</span></button><button class="opt on" data-v="teen"><b>🧑 Teen</b><span>PG-13 adventure. Real peril, nothing graphic.</span></button></div>
       <label>Pace</label><div class="opts two" id="pc"><button class="opt on" data-v="async"><b>📬 On the go</b><span>Take turns whenever. Push alerts.</span></button><button class="opt" data-v="live"><b>⚡ Live</b><span>Everyone playing at once.</span></button></div>
       <button class="btn green block lg" id="cgo">Create</button>`, (m) => {
       const pickOne = (sel, key) => $$(sel + ' .opt', m).forEach(b => b.onclick = () => { if (b.disabled) return; st[key] = b.dataset.v; $$(sel + ' .opt', m).forEach(x => x.classList.toggle('on', x === b)); if (key === 'adv') $('#cp').classList.toggle('hidden', st.adv !== 'custom'); });
-      pickOne('#advc', 'adv'); pickOne('#dmc', 'dm'); pickOne('#pc', 'pace');
-      $('#cgo').onclick = async () => { try { const r = await api('/campaigns', { name: $('#cn').value || 'New Campaign', dmMode: st.dm, pace: st.pace, premise: st.adv === 'custom' ? $('#cp').value : '' }); closeSheet(); openCampaign(r.id, 'hero'); } catch (e) { toast(e.message, 'err'); } };
+      pickOne('#advc', 'adv'); pickOne('#dmc', 'dm'); pickOne('#pc', 'pace'); pickOne('#sfc', 'level');
+      $('#cgo').onclick = async () => { try { const r = await api('/campaigns', { name: $('#cn').value || 'New Campaign', dmMode: st.dm, pace: st.pace, safety: { level: st.level }, premise: st.adv === 'custom' ? $('#cp').value : '' }); closeSheet(); openCampaign(r.id, 'hero'); } catch (e) { toast(e.message, 'err'); } };
     });
   }
   function joinSheet() {
@@ -189,28 +223,35 @@
   function onUpdate(first) {
     const C = S.C;
     const mine = isMyTurn() || !!myRoll();
-    if (!first && mine && !S.wasMine) { buzz([180, 90, 180]); banner(myRoll() ? `🎲 Roll ${myRoll().label}!` : inCombat() ? '⚔️ Your turn!' : '🎲 The spotlight is on you!'); }
+    if (!first && mine && !S.wasMine) { buzz([180, 90, 180]); banner(myRoll() ? `🎲 Roll ${myRoll().label}!` : inCombat() ? '⚔️ Your turn!' : '🎲 The spotlight is on you!'); if (typeof SOUND !== 'undefined') SOUND.sfx('turn'); }
     S.wasMine = mine;
     // fx for new log entries
     const fresh = C.log.filter(e => !S.seenFx.has(e.id)); fresh.forEach(e => S.seenFx.add(e.id));
     if (!first) fresh.forEach((e, i) => setTimeout(() => handleFresh(e), i * 260));
     if (S.target && !targetStillValid()) S.target = null;
-    renderHud(); renderTabs(); renderTab();
+    renderHud(); renderTabs(); renderTab(); if (typeof SOUND !== 'undefined') SOUND.update(C);
   }
   function handleFresh(e) {
-    if (e.fx) BOARD.playFx(e);
+    if (e.fx) BOARD.playFx(e); if (typeof SOUND !== 'undefined') SOUND.onLog(e);
     const me = S.C.me; const mt = myTok();
     if (e.fx && (e.fx.k === 'check' || e.fx.k === 'free') && e.fx.uid === me) diceShow(e.fx.pick || e.fx.tot, e.fx.tot, e.fx.ok, e.fx.k === 'free');
     if (e.fx && e.fx.k === 'atk' && mt && e.fx.a === mt.id && e.fx.pick) diceShow(e.fx.pick, e.fx.tot, e.fx.hit, false, e.fx.crit);
-    if (e.kind === 'scene') titleCard('📍 ' + e.text, e.desc);
-    if (e.kind === 'title') titleCard(e.text, e.premise, true);
+    const sceneArt = () => (typeof SCENES !== 'undefined' && S.C.scene) ? SCENES.sceneSVG(SCENES.pickTheme(S.C.scene), S.C.scene.name, { sea: /salt|bright|harbor|port|cove/i.test(S.C.scene.name) }) : '';
+    if (e.kind === 'scene') titleCard('📍 ' + e.text, e.desc, false, sceneArt());
+    if (e.kind === 'title') titleCard(e.text, e.premise, true, sceneArt());
+    if (e.kind === 'initiative') { const boss = S.C.scene && S.C.scene.tokens.find(t => t.kind === 'monster' && t.boss); if (boss && !S.seenBoss?.[boss.id]) { S.seenBoss = Object.assign(S.seenBoss || {}, { [boss.id]: 1 }); setTimeout(() => bossCard(boss), 2700); } }
     if (e.kind === 'initiative') { buzz([60, 40, 60]); setTimeout(() => BOARD.frame(S.C.scene.tokens.filter(t => t.kind === 'pc' || t.kind === 'monster')), 300); titleCard('⚔️ Roll for initiative!', (e.order || []).map(o => `${o.name} ${o.init}`).join(' · ')); }
     if (e.kind === 'victory') titleCard('🏆 Victory!', e.text.replace('Victory! ', ''));
     if (e.kind === 'quest' && /New quest|complete/.test(e.text)) banner(e.text);
     if (e.kind === 'levelup' && e.fx?.charId === myChar()?.id) buzz([100, 50, 100, 50, 200]);
   }
+  function bossCard(tk) {
+    if (S.tab !== 'play') return; const M = RR.BESTIARY[tk.mkey] || {}; if (typeof SOUND !== 'undefined') SOUND.sfx('roar');
+    const d = document.createElement('div'); d.className = 'bosscard'; d.innerHTML = `<div class="bc-in"><div class="bc-k">⚠️ BOSS</div><img src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(ART.monsterSVG(tk.mkey, 220))}"><div class="bc-n">${esc(tk.name)}</div><div class="bc-s">${esc(M.bio && typeof M.bio === 'string' ? M.bio : `CR ${M.cr || '?'} ${M.type || ''}`)}</div></div>`;
+    d.onclick = () => d.remove(); document.body.appendChild(d); buzz([200, 80, 200]); setTimeout(() => d.remove(), 3600);
+  }
   function banner(text) { const d = document.createElement('div'); d.className = 'turnbanner'; d.textContent = text; document.body.appendChild(d); setTimeout(() => d.remove(), 2400); }
-  function titleCard(title, sub, big) { if (S.tab !== 'play') return; const d = document.createElement('div'); d.className = 'titlecard' + (big ? ' big' : ''); d.innerHTML = `<div class="tc-in"><div class="tc-t">${esc(title)}</div>${sub ? `<div class="tc-s">${esc(sub)}</div>` : ''}</div>`; d.onclick = () => d.remove(); document.body.appendChild(d); setTimeout(() => d.remove(), big ? 4200 : 2600); }
+  function titleCard(title, sub, big, art, tries = 0) { if (S.tab !== 'play') return; if (document.querySelector('.titlecard, .bosscard') && tries < 12) { setTimeout(() => titleCard(title, sub, big, art, tries + 1), 700); return; } const d = document.createElement('div'); d.className = 'titlecard' + (big ? ' big' : '') + (art ? ' art' : ''); d.innerHTML = `<div class="tc-in">${art ? `<div class="tc-art">${art}</div>` : ''}<div class="tc-t">${esc(title)}</div>${sub ? `<div class="tc-s">${esc(sub)}</div>` : ''}</div>`; d.onclick = () => d.remove(); document.body.appendChild(d); setTimeout(() => d.remove(), big ? 4200 : 2600); }
 
   function renderHud() {
     const C = S.C, el = $('#hud'); if (!el) return;
@@ -414,9 +455,9 @@
       const W = ch.weapons[w]; const st = weaponStats(ch, W);
       const valid = new Set(foes().filter(m => cheb(m, t) <= st.range).map(m => m.id));
       return { title: `⚔️ ${W.name} · ${fmt(st.hit)} to hit · ${st.dmg}`, hint: valid.size ? 'Tap a glowing enemy' : `Nothing in reach (${st.range === 1 ? 'move next to one' : 'range ' + st.range})`, valid, color: '#ff5a3d', range: st.range > 1 ? { x: t.x, y: t.y, r: st.range } : null,
-        extra: `<div class="wsel">${ch.weapons.length > 1 ? `<button class="chip" id="wNext">🔄</button>` : ''}${ch.features.includes('divine_smite') && ch.slots.some(s => s.max - s.used > 0) ? `<button class="chip ${opts.smite ? 'on' : ''}" id="wSmite">✨ Smite</button>` : ''}${ch.features.includes('reckless_attack') && !S.C.turn.res.attacked ? `<button class="chip ${opts.reckless ? 'on' : ''}" id="wReck">💢 Reckless</button>` : ''}</div>`,
-        mount: () => { if ($('#wNext')) $('#wNext').onclick = () => { w = (w + 1) % ch.weapons.length; S.target = build(); renderPlay(); }; if ($('#wSmite')) $('#wSmite').onclick = () => { opts.smite = !opts.smite; S.target = build(); renderPlay(); }; if ($('#wReck')) $('#wReck').onclick = () => { opts.reckless = !opts.reckless; S.target = build(); renderPlay(); }; },
-        pick: async (hit) => { const tk = hit?.token; if (!tk || tk.kind !== 'monster') return false; if (!valid.has(tk.id)) { toast(`Out of reach — ${st.range === 1 ? 'move next to it first' : 'range ' + st.range}`); return true; } buzz(40); try { await act('attack', { targetId: tk.id, weapon: w, smite: opts.smite, reckless: opts.reckless }); } catch (e) { } const r = S.C.turn.res; S.target = r && r.attacksLeft > 0 && canActCombat() ? build() : null; renderPlay(); return true; } };
+        extra: `<div class="wsel">${ch.weapons.length > 1 ? `<button class="chip" id="wNext">🔄</button>` : ''}${ch.features.includes('divine_smite') && ch.slots.some(s => s.max - s.used > 0) ? `<button class="chip ${opts.smite ? 'on' : ''}" id="wSmite">✨ Smite</button>` : ''}${ch.features.includes('reckless_attack') && !S.C.turn.res.attacked ? `<button class="chip ${opts.reckless ? 'on' : ''}" id="wReck">💢 Reckless</button>` : ''}${ch.sup && ch.sup.used < ch.sup.max ? `<button class="chip ${opts.trip ? 'on' : ''}" id="wTrip">♟️ Trip (${ch.sup.max - ch.sup.used})</button>` : ''}</div>`,
+        mount: () => { if ($('#wNext')) $('#wNext').onclick = () => { w = (w + 1) % ch.weapons.length; S.target = build(); renderPlay(); }; if ($('#wSmite')) $('#wSmite').onclick = () => { opts.smite = !opts.smite; S.target = build(); renderPlay(); }; if ($('#wReck')) $('#wReck').onclick = () => { opts.reckless = !opts.reckless; S.target = build(); renderPlay(); }; if ($('#wTrip')) $('#wTrip').onclick = () => { opts.trip = !opts.trip; S.target = build(); renderPlay(); }; },
+        pick: async (hit) => { const tk = hit?.token; if (!tk || tk.kind !== 'monster') return false; if (!valid.has(tk.id)) { toast(`Out of reach — ${st.range === 1 ? 'move next to it first' : 'range ' + st.range}`); return true; } buzz(40); try { await act('attack', { targetId: tk.id, weapon: w, smite: opts.smite, reckless: opts.reckless, trip: opts.trip }); opts.trip = false; } catch (e) { } const r = S.C.turn.res; S.target = r && r.attacksLeft > 0 && canActCombat() ? build() : null; renderPlay(); return true; } };
     };
     if (preTarget) { const st = weaponStats(ch, ch.weapons[w]); if (cheb(preTarget, t) <= st.range) { act('attack', { targetId: preTarget.id, weapon: w }); return; } }
     setTarget(build());
@@ -431,6 +472,7 @@
       if (tk.kind === 'npc') return talkSheet(tk.npcKey);
       if (tk.kind === 'mimic') return poiSheet({ type: 'chest', name: 'Chest', id: null, tokenId: tk.id, x: tk.x, y: tk.y });
       if (tk.kind === 'pc') { if (t && tk.id === t.id) return; return allySheet(tk); }
+      if (tk.kind === 'ally') return petSheet(tk);
     }
     if (hit && hit.poi) return poiSheet(hit.poi);
     // move
@@ -500,7 +542,7 @@
     }[p.type] || ['❓', p.name, '', 'Interact'];
     sheet(`<div class="poi-head">${svgImg(ART.propSVG(p.type, 90, { opened: p.opened, open: p.open, locked: p.type === 'exit' && !p.ready }), 'big')}<div><h2>${esc(info[1])}</h2><p>${esc(info[2])}</p></div></div>
       ${info[3] && ch ? `<button class="btn green block lg" id="pGo">${info[3]}</button>${inCombat() ? '<div class="small center muted">Uses your action (you\'ll walk there first if needed).</div>' : '<div class="small center muted">Your hero walks over automatically.</div>'}` : ''}`, () => {
-      if ($('#pGo')) $('#pGo').onclick = async () => { closeSheet(); buzz(30); try { await act('interact', p.tokenId ? { tokenId: p.tokenId } : { poiId: p.id }); } catch (e) { } };
+      if ($('#pGo')) $('#pGo').onclick = async () => { closeSheet(); buzz(30); try { const r = await act('interact', p.tokenId ? { tokenId: p.tokenId } : { poiId: p.id }); if (r && r.world) worldSheet(); } catch (e) { } };
     });
   }
   function talkSheet(key) {
@@ -521,9 +563,10 @@
       const tl = $('.talk-log', m); tl.scrollTop = tl.scrollHeight;
     });
   }
+  function priceMult() { const C = S.C; if (!C.world || !C.rep) return 1; const node = Object.values(C.world.nodes).find(x => C.scene && x.scene === C.scene.key); return node && node.faction ? RR.repTier(C.rep[node.faction] || 0).disc : 1; }
   function shopSheet(n) {
-    const ch = myChar();
-    sheet(`<h2>🛒 ${esc(n.name)}'s wares</h2><div class="small">You have <b>💰 ${ch.gold} gold</b></div>
+    const ch = myChar(); const pm = priceMult(); n = Object.assign({}, n, { shop: n.shop.map(it => Object.assign({}, it, { price: Math.max(1, Math.ceil(it.price * pm)) })) });
+    sheet(`<h2>🛒 ${esc(n.name)}'s wares</h2><div class="small">You have <b>💰 ${ch.gold} gold</b>${pm !== 1 ? ` · <span class="${pm < 1 ? 'good' : 'bad'}">${pm < 1 ? '😊 friend discount' : '😠 they charge you extra'}</span>` : ''}</div>
       <ul class="list shop">${n.shop.map(it => `<li><div><b>${it.icon} ${esc(it.name)}</b><div class="small muted">${esc(it.desc || '')}</div></div><button class="btn sm ${ch.gold >= it.price ? 'gold' : 'ghost'}" data-buy="${it.k}" ${ch.gold >= it.price ? '' : 'disabled'}>${it.price} gp</button></li>`).join('')}</ul>
       <h3>Sell</h3><ul class="list">${ch.inventory.filter(i => RR.ITEMS[i.k]?.price && !RR.ITEMS[i.k]?.story).map(i => `<li><span>${RR.ITEMS[i.k].icon} ${esc(i.n)}${i.q > 1 ? ' ×' + i.q : ''}</span><button class="chip" data-sell="${ch.inventory.indexOf(i)}">Sell ${Math.floor(RR.ITEMS[i.k].price / 2)} gp</button></li>`).join('') || '<li class="muted small">Nothing to sell.</li>'}</ul>
       <button class="btn ghost block" id="sBack">‹ Back to ${esc(n.name)}</button>`, (m) => {
@@ -552,6 +595,11 @@
       const valid = new Set(foes().filter(m => cheb(m, t) <= S0.range).map(m => m.id));
       return setTarget({ title: `✨ ${S0.name}`, hint: valid.size ? 'Tap a glowing enemy' : 'No enemy in range', valid, color: '#c9a6ff', range: { x: t.x, y: t.y, r: S0.range }, free: !inCombat(), pick: async (hit) => { const tk = hit?.token; if (!tk || !valid.has(tk.id)) { if (tk) toast('Out of range'); return true; } await go({ targetId: tk.id }); return true; } });
     }
+    if (S0.target === 'any') {
+      const valid = new Set(S.C.scene.tokens.filter(o => o.kind === 'pc' && (o.dead || o.hp <= 0) && cheb(o, t) <= S0.range).map(o => o.id));
+      if (!valid.size) { toast(S0.range === 1 ? 'Stand next to a fallen hero' : 'No fallen hero in range'); return; }
+      return setTarget({ title: `✨ ${S0.name}`, hint: 'Tap the fallen hero', valid, color: '#ffe08a', free: !inCombat(), pick: async (hit) => { const tk = hit?.token; if (!tk || !valid.has(tk.id)) return true; await go({ targetId: tk.id }); return true; } });
+    }
     if (S0.target === 'ally') {
       const valid = new Set(allies().filter(a => cheb(a, t) <= S0.range).map(a => a.id));
       return setTarget({ title: `✨ ${S0.name}`, hint: S0.range === 1 ? 'Tap yourself or an ally next to you' : 'Tap a hero', valid, color: '#8fd16a', range: S0.range > 1 ? { x: t.x, y: t.y, r: S0.range } : null, free: !inCombat(), pick: async (hit) => { const tk = hit?.token; if (!tk || tk.kind !== 'pc') return true; if (!valid.has(tk.id)) { toast('Too far'); return true; } await go({ targetId: tk.id }); return true; } });
@@ -574,6 +622,8 @@
       $$('[data-f]', m).forEach(b => b.onclick = () => {
         const k = b.dataset.f; const t = myTok();
         if (k === 'martial_arts' || k === 'flurry') { const valid = new Set(foes().filter(f => cheb(f, t) <= 1).map(f => f.id)); return setTarget({ title: k === 'flurry' ? '👊 Flurry of Blows' : '👊 Bonus unarmed strike', hint: 'Tap an adjacent enemy', valid, pick: async (hit) => { const tk = hit?.token; if (!tk || !valid.has(tk.id)) return true; await act(k === 'flurry' ? 'feature' : 'attack', k === 'flurry' ? { key: 'flurry', targetId: tk.id } : { targetId: tk.id, unarmedBonus: true }).catch(() => { }); S.target = null; renderPlay(); return true; } }); }
+        if (k === 'vow_of_enmity') { const valid = new Set(foes().filter(f => cheb(f, t) <= 2).map(f => f.id)); return setTarget({ title: '🎯 Vow of Enmity', hint: 'Tap the enemy you swear to defeat', valid, pick: async (hit) => { const tk = hit?.token; if (!tk || !valid.has(tk.id)) return true; await act('feature', { key: k, targetId: tk.id }).catch(() => { }); S.target = null; renderPlay(); return true; } }); }
+        if (k === 'shadow_step') { closeSheet(); return setTarget({ title: '🌑 Shadow Step', hint: 'Tap an open square within 12', range: { x: t.x, y: t.y, r: 12 }, valid: new Set(), color: '#8a7ad9', pick: async (hit, pos) => { if (cheb(pos, t) > 12) { toast('Too far'); return true; } await act('feature', { key: k, x: pos.x, y: pos.y }).catch(() => { }); S.target = null; renderPlay(); return true; } }); }
         if (k === 'hungry_jaws') { const valid = new Set(foes().filter(f => cheb(f, t) <= 1).map(f => f.id)); return setTarget({ title: '🦎 Hungry Jaws', hint: 'Tap an adjacent enemy to bite', valid, pick: async (hit) => { const tk = hit?.token; if (!tk || !valid.has(tk.id)) return true; await act('feature', { key: k, targetId: tk.id }).catch(() => { }); S.target = null; renderPlay(); return true; } }); }
         if (k === 'bardic_inspiration' || k === 'lay_on_hands' || k === 'healing_hands') { const valid = new Set(allies().filter(a => (k !== 'bardic_inspiration' ? cheb(a, t) <= 1 : a.id !== t.id && cheb(a, t) <= 12)).map(a => a.id)); return setTarget({ title: RR.FEATURES[k].name, hint: 'Tap a hero', valid, color: '#8fd16a', pick: async (hit) => { const tk = hit?.token; if (!tk || !valid.has(tk.id)) return true; await act('feature', { key: k, targetId: tk.id }).catch(() => { }); S.target = null; renderPlay(); return true; } }); }
         if (k === 'breath_weapon') { let spot = null; const tg = { title: '🐲 Breath Weapon', hint: 'Tap where to breathe (within 3), tap again to fire', range: { x: t.x, y: t.y, r: 3 }, valid: new Set(), pick: async (hit, pos) => { if (cheb(pos, t) > 3) { toast('Too far'); return true; } if (spot && spot.x === pos.x && spot.y === pos.y) { await act('feature', { key: k, x: pos.x, y: pos.y }).catch(() => { }); S.target = null; renderPlay(); return true; } spot = pos; tg.area = { x: pos.x, y: pos.y, r: 1 }; S.target = tg; renderPlay(); return true; } }; return setTarget(tg); }
@@ -603,8 +653,10 @@
         <button class="btn ghost block" id="mCheck">🎯 Make a skill check</button>
         <button class="btn ghost block" id="mDice">🎲 Roll dice</button>
         <button class="btn ghost block" id="mChat">💬 Party chat</button>
+        <button class="btn ghost block" id="mSnd">🔊 Sound & music</button>
+        <button class="btn ghost block" id="mX">🛑 Pause / skip this scene</button>
         ${humanDM() ? `<button class="btn blue block" id="mDM">📜 DM tools</button>` : ''}</div>`, () => {
-        $('#mGather').onclick = () => { closeSheet(); act('gather', {}); }; $('#mCheck').onclick = checkSheet; $('#mDice').onclick = diceTray; $('#mChat').onclick = () => composer('chat'); if ($('#mDM')) $('#mDM').onclick = dmSheet;
+        $('#mGather').onclick = () => { closeSheet(); act('gather', {}); }; $('#mCheck').onclick = checkSheet; $('#mDice').onclick = diceTray; $('#mChat').onclick = () => composer('chat'); $('#mX').onclick = xcard; $('#mSnd').onclick = () => sheet(`<h2>🔊 Sound & music</h2>${SOUND.settingsHTML()}<div class="small muted">Your own tracks can be uploaded from ⚙️ on the home screen.</div>`, (mm) => SOUND.bindSettings(mm)); if ($('#mDM')) $('#mDM').onclick = dmSheet;
       }); return;
     }
     const b = (k, label, desc, cost, ok = true) => `<button class="spell ${ok ? '' : 'off'}" data-k="${k}" data-bonus="${cost === 'bonus' ? 1 : ''}" ${ok ? '' : 'disabled'}><div class="row"><b class="grow">${label}</b><span class="tag ${cost === 'bonus' ? 'blue' : ''}">${cap(cost)}</span></div><div class="small muted">${desc}</div></button>`;
@@ -612,17 +664,84 @@
       ${restrained ? b('breakfree', '💪 Break free', 'Athletics or Acrobatics vs DC 12.', 'action', r.action) : ''}
       ${b('dash', '🏃 Dash', 'Double your movement this turn.', dashB && r.bonus ? 'bonus' : 'action', r.action || (dashB && r.bonus))}
       ${b('dodge', '💨 Dodge', 'Attacks against you have disadvantage until your next turn.', 'action', r.action)}
+      ${b('disengage', '↩️ Disengage', 'Back away this turn without giving enemies a free swing.', cunning && r.bonus ? 'bonus' : 'action', r.action || (cunning && r.bonus))}
+      ${b('shove', '💥 Shove', 'Knock an adjacent enemy prone or push it away (uses one attack).', ch.features.includes('feat_shield_master') && ch.equip.shield && r.bonus ? 'bonus' : 'action', r.action || r.attacksLeft > 0 || (ch.features.includes('feat_shield_master') && r.bonus))}
+      ${b('grapple', '🤼 Grapple', 'Grab an adjacent enemy so it can\'t move (uses one attack).', 'action', r.action || r.attacksLeft > 0)}
       ${b('hide', '🫥 Hide', 'Stealth check. If hidden, your next attack has advantage.', cunning && r.bonus ? 'bonus' : 'action', r.action || (cunning && r.bonus))}
       ${ch.weapons.filter(w => w.light && !w.ranged).length >= 2 ? b('offhand', '🗡️ Off-hand attack', 'After attacking with a light weapon, strike with the other.', 'bonus', r.bonus && r.lightUsed) : ''}
       ${b('do', '✍️ Something creative…', 'Swing from the chandelier, shove, trick... the DM decides.', 'action', r.action)}
-      ${b('chat', '💬 Party chat', 'Talk out of character.', 'free')}`, (m) => {
+      ${b('chat', '💬 Party chat', 'Talk out of character.', 'free')}
+      ${b('xcard', '🛑 Pause / skip this', 'Uncomfortable? Tap this — the story moves on, no questions asked.', 'free')}`, (m) => {
       $$('[data-k]', m).forEach(x => x.onclick = () => {
         const k = x.dataset.k;
-        if (k === 'do') return composer('do'); if (k === 'chat') return composer('chat');
+        if (k === 'do') return composer('do'); if (k === 'chat') return composer('chat'); if (k === 'xcard') return xcard();
         if (k === 'offhand') { const lw = ch.weapons.findIndex((w, i) => w.light && !w.ranged && i > 0) || 1; const valid = new Set(foes().filter(f => cheb(f, t) <= 1).map(f => f.id)); return setTarget({ title: '🗡️ Off-hand attack', hint: 'Tap an adjacent enemy', valid, pick: async (hit) => { const tk = hit?.token; if (!tk || !valid.has(tk.id)) return true; await act('attack', { targetId: tk.id, weapon: lw, offhand: true }).catch(() => { }); S.target = null; renderPlay(); return true; } }); }
+        if (k === 'shove' || k === 'grapple') { const valid = new Set(foes().filter(f => cheb(f, t) <= 1).map(f => f.id)); if (!valid.size) { toast('Stand next to an enemy first'); return; } let mode = 'prone';
+          const tg = { title: k === 'shove' ? '💥 Shove' : '🤼 Grapple', hint: 'Tap an adjacent enemy', valid, extra: k === 'shove' ? `<div class="wsel"><button class="chip on" id="shP">⬇️ Knock prone</button><button class="chip" id="shB">➡️ Push away</button></div>` : '',
+            mount: () => { if ($('#shP')) { $('#shP').onclick = () => { mode = 'prone'; $('#shP').classList.add('on'); $('#shB').classList.remove('on'); }; $('#shB').onclick = () => { mode = 'push'; $('#shB').classList.add('on'); $('#shP').classList.remove('on'); }; } },
+            pick: async (hit) => { const tk = hit?.token; if (!tk || !valid.has(tk.id)) return true; await act('basic', { kind: k, targetId: tk.id, mode, bonus: !!x.dataset.bonus }).catch(() => { }); S.target = null; renderPlay(); return true; } };
+          return setTarget(tg); }
         closeSheet(); act('basic', { kind: k, bonus: !!x.dataset.bonus });
       });
     });
+  }
+  function xcard() { closeSheet(); act('xcard', {}).then(() => toast('🛑 Got it — moving on.')).catch(() => { }); }
+  // ---------- companions ----------
+  function petSheet(tk) {
+    const P = RR.COMPANIONS[tk.petKey] || {}; const owner = S.C.characters[tk.ownerId]; const mine = owner && owner.ownerId === S.C.me;
+    sheet(`<div class="mon-head"><img class="monpic" src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(ART.monsterSVG(tk.mkey, 96))}"><div><h2>${esc(tk.name)}</h2><div class="small">${tk.summoned ? '✨ Summoned spirit' : `${P.icon || '🐾'} ${esc(P.name || '')} · ${owner ? esc(owner.name) + "'s friend" : ''}`}</div>
+      <div class="hpbar"><i style="width:${(tk.hpPct || 0) * 100}%"></i><span>${tk.hp} / ${tk.maxHp} HP · AC ${tk.ac}</span></div></div></div><p class="small">${esc(P.desc || 'It fights on your side until the spell ends.')}</p>
+      ${mine && !tk.summoned ? `<label>Name</label><div class="row"><input id="ptN" value="${esc(tk.name)}" maxlength="20"><button class="btn blue" id="ptS">Rename</button></div>` : ''}`, (m) => {
+      if ($('#ptS', m)) $('#ptS', m).onclick = () => { act('renamepet', { key: tk.petKey, name: $('#ptN', m).value }); closeSheet(); };
+    });
+  }
+  function adoptSheet() {
+    const ch = myChar(); const caster = ['Wizard', 'Warlock', 'Sorcerer'].includes(ch.class) || (ch.feats || []).includes('feat_magic_initiate');
+    const list = Object.entries(RR.COMPANIONS).filter(([k, P]) => P.kind !== 'companion' && (P.kind !== 'familiar' || caster));
+    sheet(`<h2>🐾 Animal friends</h2><div class="small muted">Companions follow you everywhere and fight beside you. If they get knocked out, they limp back after the fight.</div>
+      ${list.map(([k, P]) => { const has = (ch.pets || []).some(p => p.key === k); return `<button class="spell ${has ? 'off' : ''}" data-pet="${k}" ${has ? 'disabled' : ''}><div class="row"><img class="petimg" src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(ART.monsterSVG(P.mkey, 60))}"><b class="grow">${P.icon} ${esc(P.name)}</b><span class="tag gold">${P.price ? P.price + ' gp' : 'free'}</span></div><div class="small">${esc(P.desc)}</div></button>`; }).join('')}`, (m) => {
+      $$('[data-pet]', m).forEach(b => b.onclick = async () => { try { await act('buypet', { key: b.dataset.pet }); closeSheet(); } catch (e) { } });
+    });
+  }
+  // ---------- level-up choices ----------
+  function chooseSheet() {
+    const ch = myChar(); const q = (ch.choices || [])[0]; if (!q) return;
+    const next = async (body) => { try { await act('choose', body); } catch (e) { return; } const c2 = myChar(); if ((c2.choices || []).length) setTimeout(chooseSheet, 250); else { closeSheet(); toast('⭐ All set!'); } };
+    if (q.t === 'subclass') {
+      const subs = RR.SUBCLASSES[ch.class];
+      sheet(`<h2>🧭 Choose your path</h2><div class="small muted">Level 3 ${esc(ch.class)}s pick a specialty. This shapes how you play from now on.</div>
+        ${Object.entries(subs).map(([k, Sb]) => `<button class="spell big" data-sub="${k}"><div class="row"><b class="grow">${Sb.icon} ${esc(Sb.name)}</b></div><div>${esc(Sb.desc)}</div><div class="chips">${Object.entries(Sb.f).map(([l, fs]) => fs.map(f => `<span class="tag">Lv ${l}: ${esc(RR.FEATURES[f]?.name || f)}</span>`).join('')).join('')}${(Sb.spells || []).length ? `<span class="tag blue">+${Sb.spells.length} bonus spells</span>` : ''}</div></button>`).join('')}`, (m) => {
+        $$('[data-sub]', m).forEach(b => b.onclick = () => next({ pick: b.dataset.sub }));
+      });
+      return;
+    }
+    if (q.t === 'asi') {
+      const pick = [];
+      const feats = RR.FEATS.filter(f => !(ch.feats || []).includes(f));
+      sheet(`<h2>💪 Level ${q.lvl} upgrade</h2><div class="small muted">Raise two abilities by +1 (or one by +2) — or learn a feat instead.</div>
+        <h3>Raise abilities</h3><div class="abil">${RR.ABILITIES.map(a => `<button class="card ab" data-up="${a}" ${ch.scores[a] >= 20 ? 'disabled' : ''}><div class="k">${a.toUpperCase()}${a === RR.CLASSES[ch.class].primary ? ' ⭐' : ''}</div><div class="m" id="sc_${a}">${ch.scores[a]}</div><div class="s" id="pl_${a}"></div></button>`).join('')}</div>
+        <button class="btn gold block" id="asiGo" disabled>Pick 2 boosts</button>
+        <h3>…or learn a feat</h3>${feats.map(f => `<button class="spell" data-feat="${f}"><div class="row"><b class="grow">🎖️ ${esc(RR.FEATURES[f].name)}</b></div><div class="small">${esc(RR.FEATURES[f].desc)}</div></button>`).join('')}`, (m) => {
+        const upd = () => { RR.ABILITIES.forEach(a => { const n = pick.filter(x => x === a).length; $('#pl_' + a, m).textContent = n ? '+' + n : ''; $('#sc_' + a, m).textContent = ch.scores[a] + n; }); const go = $('#asiGo', m); go.disabled = pick.length < 2; go.textContent = pick.length < 2 ? `Pick ${2 - pick.length} more` : `✅ Raise ${pick.map(a => a.toUpperCase()).join(' + ')}`; };
+        $$('[data-up]', m).forEach(b => b.onclick = () => { const a = b.dataset.up; if (pick.length >= 2) pick.length = 0; if (ch.scores[a] + pick.filter(x => x === a).length >= 20) return; pick.push(a); upd(); });
+        $('#asiGo', m).onclick = () => next({ stats: pick.slice() });
+        $$('[data-feat]', m).forEach(b => b.onclick = () => next({ feat: b.dataset.feat }));
+      });
+      return;
+    }
+    if (q.t === 'spells') {
+      const pool = RR.classSpells(ch.class, ch.level).filter(k => RR.SPELLS[k].lvl > 0 && !(ch.known || []).includes(k)).sort((a, b) => RR.SPELLS[b].lvl - RR.SPELLS[a].lvl || RR.SPELLS[a].name.localeCompare(RR.SPELLS[b].name));
+      const n = Math.min(q.n, pool.length); const sel = new Set();
+      const rec = () => { const out = []; const byL = {}; pool.forEach(k => (byL[RR.SPELLS[k].lvl] = byL[RR.SPELLS[k].lvl] || []).push(k)); const lv = Object.keys(byL).sort((a, b) => b - a); let i = 0; while (out.length < n) { const L = byL[lv[i % lv.length]]; if (L.length) out.push(L.shift()); i++; if (i > 400) break; } return out; };
+      sheet(`<h2>📖 Learn ${n} new spell${n > 1 ? 's' : ''}</h2><div class="row"><span class="small muted grow" id="spN">0 / ${n} picked</span><button class="chip" id="spRec">✨ Pick for me</button></div>
+        <div class="col" id="spList">${pool.map(k => { const Sp = RR.SPELLS[k]; return `<button class="spell" data-learn="${k}"><div class="row"><b class="grow">${esc(Sp.name)}</b><span class="tag">L${Sp.lvl}</span></div><div class="small">${esc(Sp.desc)}</div></button>`; }).join('')}</div>
+        <button class="btn gold block lg" id="spGo" disabled>Learn them</button>`, (m) => {
+        const upd = () => { $$('[data-learn]', m).forEach(b => b.classList.toggle('on', sel.has(b.dataset.learn))); $('#spN', m).textContent = `${sel.size} / ${n} picked`; $('#spGo', m).disabled = sel.size !== n; };
+        $$('[data-learn]', m).forEach(b => b.onclick = () => { const k = b.dataset.learn; if (sel.has(k)) sel.delete(k); else if (sel.size < n) sel.add(k); upd(); });
+        $('#spRec', m).onclick = () => { sel.clear(); rec().forEach(k => sel.add(k)); upd(); };
+        $('#spGo', m).onclick = () => next({ spells: [...sel] });
+      });
+    }
   }
   function restSheet() {
     const C = S.C; const sc = C.scene;
@@ -688,9 +807,10 @@
     const castAb = RR.CLASSES[ch.class].castAb;
     const eq = ch.equip;
     main.innerHTML = `<div class="scroll hero">
-      <div class="card herohead"><button class="portrait" id="bLook">${heroArt(ch, 110)}<span class="editpen">🎨</span></button><div class="grow"><h2>${esc(ch.name)}</h2><div>Level ${ch.level} ${esc(ch.race)} ${esc(ch.class)}</div>
+      <div class="card herohead"><button class="portrait" id="bLook">${heroArt(ch, 110)}<span class="editpen">🎨</span></button><div class="grow"><h2>${esc(ch.name)}</h2><div>Level ${ch.level} ${esc(ch.race)} ${esc(ch.class)}</div>${ch.subclass ? `<div class="small">${RR.SUBCLASSES[ch.class][ch.subclass].icon} ${esc(RR.SUBCLASSES[ch.class][ch.subclass].name)}</div>` : ''}
         <div class="hpbar big"><i style="width:${Math.max(0, ch.hp) / ch.maxHp * 100}%"></i>${ch.temp ? `<u style="width:${Math.min(100, ch.temp / ch.maxHp * 100)}%"></u>` : ''}<span>${ch.dead ? '☠️ Dead' : ch.hp <= 0 ? '💔 Down' : `${ch.hp} / ${ch.maxHp} HP`}${ch.temp ? ` +${ch.temp}` : ''}</span></div>
         <div class="xp"><div class="hpbar xpbar"><i style="width:${Math.min(100, (ch.xp - prevXp) / Math.max(1, nextXp - prevXp) * 100)}%"></i><span>XP ${ch.xp} / ${nextXp}</span></div>${ch.levelUpReady ? `<button class="btn gold sm pulse" id="bLvl">⭐ Level up!</button>` : ''}</div></div></div>
+      ${(ch.choices || []).length ? `<button class="btn gold block lg pulse" id="bChoose">⭐ Choose your upgrades (${ch.choices.length})</button>` : ''}
       <div class="statrow"><div><b>🛡️ ${ac}</b>AC</div><div><b>👣 ${ch.speed}</b>Speed</div><div><b>${fmt(RR.mod(ch.scores.dex))}</b>Init</div><div><b>${fmt(RR.prof(ch.level))}</b>Prof</div><div><b>💰 ${ch.gold}</b>Gold</div></div>
       ${ch.conds.length ? `<div class="chips">${ch.conds.map(k => `<span class="chip">${RR.CONDITIONS[k.k]?.icon || ''} ${RR.CONDITIONS[k.k]?.name || k.k}</span>`).join('')}</div>` : ''}
       <div class="abil">${RR.ABILITIES.map(a => `<button class="card ab" data-ab="${a}"><div class="k">${a.toUpperCase()}</div><div class="m">${fmt(RR.mod(ch.scores[a]))}</div><div class="s">${ch.scores[a]}${ch.saves.includes(a) ? ' ★' : ''}</div></button>`).join('')}</div>
@@ -698,6 +818,9 @@
       <div class="card"><h3>⚔️ Attacks</h3><ul class="list">${ch.weapons.map((w, i) => { const st = weaponStats(ch, w); return `<li><span>${esc(w.name)}${w.range > 1 ? ` <span class="small muted">${w.range * 5} ft</span>` : ''}</span><span><b>${fmt(st.hit)}</b> · ${st.dmg}${ch.weapons.length > 1 ? ` <button class="mini" data-unw="${i}">✕</button>` : ''}</span></li>`; }).join('')}</ul></div>
       ${ch.spells.length ? `<div class="card"><h3>✨ Spells</h3><div class="small">${slotPips(ch)} <span class="muted">· attack ${fmt(RR.prof(ch.level) + RR.mod(ch.scores[castAb]))} · DC ${8 + RR.prof(ch.level) + RR.mod(ch.scores[castAb])}</span></div><div class="chips">${ch.spells.map(k => `<button class="chip" data-sp="${k}">${RR.SPELLS[k].lvl ? '' : '∞ '}${esc(RR.SPELLS[k].name)}</button>`).join('')}</div></div>` : ''}
       <div class="card"><h3>⭐ Features</h3><div class="chips">${ch.features.map(k => RR.FEATURES[k] ? `<button class="chip" data-ft="${k}">${esc(RR.FEATURES[k].name)}${featureUsesLeft(ch, k) != null ? ` (${featureUsesLeft(ch, k)})` : ''}</button>` : '').join('')}${RR.RACES[ch.race].traits.map(t => `<span class="chip muted2">${esc(t)}</span>`).join('')}</div></div>
+      <div class="card"><h3>🐾 Companions</h3>${(ch.pets || []).length ? `<ul class="list">${ch.pets.map(p => { const P = RR.COMPANIONS[p.key]; return `<li><span>${P.icon} ${esc(p.name)}</span><span class="small">${p.down ? '💤 resting' : `❤️ ${p.hp}/${p.maxHp}`}</span></li>`; }).join('')}</ul>` : '<div class="small muted">No animal friends yet.</div>'}
+        ${C.scene && C.scene.kind === 'town' ? `<button class="btn ghost sm" id="bAdopt">🐾 Visit the stables</button>` : '<div class="small muted">Visit a town to adopt a pet or call a familiar.</div>'}</div>
+      ${ch.sup ? `<div class="small center">♟️ Superiority dice: ${ch.sup.max - ch.sup.used} / ${ch.sup.max} (d8)</div>` : ''}${ch.conc ? `<div class="small center">🧠 Concentrating on <b>${esc(RR.SPELLS[ch.conc.spell]?.name || '')}</b></div>` : ''}
       <div class="card"><h3>🛡️ Equipped</h3><ul class="list">
         <li><span>Armor</span><span>${eq.armor ? esc(RR.ITEMS[eq.armor]?.name || RR.ARMOR[eq.armor]?.name) + ` <button class="mini" data-une="armor">✕</button>` : '<span class="muted">none</span>'}</span></li>
         <li><span>Shield</span><span>${eq.shield ? 'Shield (+2) <button class="mini" data-une="shield">✕</button>' : '<span class="muted">none</span>'}</span></li>
@@ -706,7 +829,7 @@
       <div class="card"><h3>🎯 Skills</h3><div class="skillgrid">${Object.keys(RR.SKILLS).map(k => `<button class="sk ${ch.skills.includes(k) ? 'prof' : ''}" data-sk="${k}"><span>${cap(k)}</span><b>${fmt(sk(k))}</b></button>`).join('')}</div></div>
       <div class="card"><h3>📖 Backstory</h3><textarea id="bs" rows="3" placeholder="Where does your hero come from? What do they want? The DM uses this!">${esc(ch.backstory)}</textarea><button class="btn ghost sm" id="saveBs">Save</button></div>
       <div style="height:20px"></div></div>`;
-    $('#bLook').onclick = lookSheet;
+    $('#bLook').onclick = lookSheet; if ($('#bChoose')) $('#bChoose').onclick = chooseSheet; if ($('#bAdopt')) $('#bAdopt').onclick = adoptSheet;
     if ($('#bLvl')) $('#bLvl').onclick = async () => { try { const r = await act('levelup', {}); if (r.levelup) levelUpCard(r.levelup); } catch (e) { } };
     $$('[data-ab]').forEach(b => b.onclick = () => sheet(`<h2>${RR.ABILITY_NAMES[b.dataset.ab]}</h2><div class="col"><button class="btn green block" id="abC">🎲 ${RR.ABILITY_NAMES[b.dataset.ab]} check (${fmt(RR.mod(ch.scores[b.dataset.ab]))})</button><button class="btn ghost block" id="abS">🛡️ Saving throw (${fmt(RR.mod(ch.scores[b.dataset.ab]) + (ch.saves.includes(b.dataset.ab) ? RR.prof(ch.level) : 0))})</button></div>`, () => { $('#abC').onclick = () => { closeSheet(); act('check', { ability: b.dataset.ab }); }; $('#abS').onclick = () => { closeSheet(); act('check', { ability: b.dataset.ab, save: true }); }; }));
     $$('[data-sk]').forEach(b => b.onclick = () => act('check', { skill: b.dataset.sk }));
@@ -735,7 +858,7 @@
       ${r.features.length ? `<h3>New abilities</h3><div class="chips center">${r.features.map(f => `<span class="chip on">${esc(f)}</span>`).join('')}</div>` : ''}
       ${r.spells.length ? `<h3>New spells</h3><div class="chips center">${r.spells.map(f => `<span class="chip on">${esc(f)}</span>`).join('')}</div>` : ''}
       ${r.slots.length ? `<div class="small">Spell slots: ${r.slots.map((n, i) => n ? `L${i + 1}×${n}` : '').filter(Boolean).join(' · ')}</div>` : ''}
-      <button class="btn gold block lg" data-close>Awesome!</button></div>`, (m) => { $$('[data-close]', m).forEach(b => b.onclick = closeSheet); });
+      ${r.choices ? `<button class="btn gold block lg" id="luChoose">⭐ Choose your upgrades</button>` : `<button class="btn gold block lg" data-close>Awesome!</button>`}</div>`, (m) => { $$('[data-close]', m).forEach(b => b.onclick = closeSheet); if ($('#luChoose', m)) $('#luChoose', m).onclick = chooseSheet; });
   }
 
   // creator
@@ -789,14 +912,43 @@
     main.innerHTML = `<div class="scroll journal">
       <div class="card tilt"><div class="small muted">${C.adventure ? 'Chapter ' + (C.adventure.chapter || 1) : ''}</div><h2>${esc(C.adventure ? C.adventure.title : C.name)}</h2><p class="premise">${esc(C.adventure ? C.adventure.premise : '')}</p>
         ${C.adventure && C.adventure.done && owner ? `<button class="btn red block lg" id="bNext">📜 Start the next chapter</button>` : ''}</div>
+      ${C.world ? `<button class="btn blue block lg" id="bWorld">🗺️ World map</button>` : ''}
+      ${C.rep ? `<h3>🏳️ Factions</h3><div class="card">${Object.entries(RR.FACTIONS).map(([k, F]) => { const v = C.rep[k] || 0; const T = RR.repTier(v); return `<div class="rep"><div class="row"><b class="grow">${F.icon} ${esc(F.name)}</b><span class="small">${T.icon} ${T.n}</span></div><div class="repbar"><i style="left:50%;width:${Math.abs(v) / 2}%;${v < 0 ? `left:${50 - Math.abs(v) / 2}%;background:#e8604a` : ''}"></i></div><div class="small muted">${esc(F.desc)}</div></div>`; }).join('')}</div>` : ''}
       <h3>📜 Quests</h3>${qs.length ? qs.map(q => `<div class="card quest ${q.status}"><div class="row"><b class="grow">${q.main ? '⭐ ' : ''}${esc(q.title)}</b>${q.status === 'done' ? '<span class="tag green">Done</span>' : ''}</div>${q.giver ? `<div class="small muted">From ${esc(q.giver)}</div>` : ''}<div class="small">${esc(q.desc || '')}</div>
         <ul class="objs">${q.objectives.map((o, i) => { const firstOpen = q.objectives.findIndex(x => !x.done) === i; return `<li class="${o.done ? 'done' : firstOpen ? 'next' : ''}">${o.done ? '✔' : firstOpen ? '➤' : '○'} ${esc(o.t)}</li>`; }).join('')}</ul>
         ${q.reward && q.status !== 'done' ? `<div class="small muted">Reward: ${[q.reward.gold ? q.reward.gold + ' gold' : '', q.reward.xp ? q.reward.xp + ' XP' : '', q.reward.item ? (RR.ITEMS[q.reward.item]?.name || q.reward.item) : ''].filter(Boolean).join(' · ')}</div>` : ''}</div>`).join('') : '<p class="muted">No quests yet — talk to people!</p>'}
       <h3>🧑‍🤝‍🧑 People</h3><div class="people">${npcs.map(n => `<button class="card person" data-npc="${n.key}">${npcPic(n, 54)}<div class="left"><b>${esc(n.name)}</b><div class="small muted">${esc(n.role)}</div>${n.here ? '<span class="tag green">Here</span>' : ''}${n.secret ? '<span class="tag gold">Secret known</span>' : ''}</div></button>`).join('') || '<p class="muted">Nobody yet.</p>'}</div>
       <h3>🗺️ Places</h3><div class="chips">${C.scenes.map(s => `<span class="chip ${C.scene && s.key === C.scene.key ? 'on' : ''}">${C.scene && s.key === C.scene.key ? '📍 ' : ''}${esc(s.name)}</span>`).join('')}</div>
       <div style="height:20px"></div></div>`;
-    if ($('#bNext')) $('#bNext').onclick = () => act('nextadventure', {});
+    if ($('#bNext')) $('#bNext').onclick = () => act('nextadventure', {}); if ($('#bWorld')) $('#bWorld').onclick = worldSheet;
     $$('[data-npc]').forEach(b => b.onclick = () => { const n = C.npcs[b.dataset.npc]; if (n.here) talkSheet(n.key); else sheet(`<div class="talk-head">${npcPic(n, 92)}<div><h2>${esc(n.name)}</h2><div class="small muted">${esc(n.role)}</div><p>${esc(n.desc)}</p></div></div>${n.secret ? `<div class="e clue"><div class="e-k">🔓 Secret</div>${esc(n.secret)}</div>` : ''}<div class="small muted">Not here right now.</div>`); });
+  }
+
+  // ---------------- WORLD MAP ----------------
+  function worldSheet() {
+    const C = S.C; const W = C.world; if (!W) return toast('No map yet');
+    const here = Object.values(W.nodes).find(n => C.scene && n.scene === C.scene.key);
+    const nb = here ? W.edges.filter(e => e.includes(here.key)).map(e => e[0] === here.key ? e[1] : e[0]) : [];
+    const P = (n) => [n.x * 3.6, n.y * 3.0];
+    const icon = (n) => ({ forest: '🌲', mountain: '⛰️', swamp: '🐸', coast: '⚓' }[n.biome] || '🏘️');
+    const svg = `<svg viewBox="0 0 360 300" class="worldmap">
+      <defs><filter id="wmr"><feTurbulence baseFrequency=".04" numOctaves="3" seed="4"/><feDisplacementMap in="SourceGraphic" scale="6"/></filter></defs>
+      <rect x="6" y="6" width="348" height="288" rx="14" fill="#efdcae" stroke="#8a6a3a" stroke-width="3"/>
+      <path d="M220 300 Q240 240 300 230 Q340 225 360 200 L360 300Z" fill="#9ccbe0" opacity=".8" filter="url(#wmr)"/>
+      <path d="M30 40 Q80 20 120 60 Q140 110 90 150 Q40 140 30 90Z" fill="#a9c48a" opacity=".55" filter="url(#wmr)"/>
+      <path d="M210 20 L240 70 L262 30 L290 80 L320 26 L340 70 L210 70Z" fill="#b8a68a" opacity=".6"/>
+      <path d="M20 200 Q60 190 90 230 Q80 270 30 270Z" fill="#7f9a6a" opacity=".5" filter="url(#wmr)"/>
+      ${W.edges.map(([a, b]) => { const A = P(W.nodes[a]), B2 = P(W.nodes[b]); const live = here && ((a === here.key) || (b === here.key)); return `<path d="M${A[0]} ${A[1]} Q${(A[0] + B2[0]) / 2 + 12} ${(A[1] + B2[1]) / 2 - 10} ${B2[0]} ${B2[1]}" fill="none" stroke="${live ? '#b5452c' : '#8a6a3a'}" stroke-width="${live ? 3 : 2}" stroke-dasharray="6 5"/>`; }).join('')}
+      ${Object.values(W.nodes).map(n => { const [x, y] = P(n); const F = RR.FACTIONS[n.faction]; const isHere = here && n.key === here.key; return `<g class="wmnode ${nb.includes(n.key) ? 'go' : ''}" data-wn="${n.key}"><circle cx="${x}" cy="${y}" r="${isHere ? 17 : 14}" fill="${n.discovered ? '#fff4d6' : '#d8c49a'}" stroke="${isHere ? '#b5452c' : '#5a4a2b'}" stroke-width="${isHere ? 4 : 2}"/><text x="${x}" y="${y + 5}" text-anchor="middle" font-size="15">${n.discovered ? icon(n) : '❔'}</text><text x="${x}" y="${y + 30}" text-anchor="middle" font-size="12" font-weight="800" fill="#3a2a1a">${esc(n.name)}</text>${F ? `<text x="${x + 15}" y="${y - 10}" font-size="11">${F.icon}</text>` : ''}</g>`; }).join('')}
+      ${here ? (() => { const [x, y] = P(here); return `<text x="${x}" y="${y - 20}" text-anchor="middle" font-size="16">📍</text>`; })() : ''}
+      <text x="22" y="284" font-size="13" font-weight="800" fill="#5a4a2b">🧭 The Realm</text></svg>`;
+    sheet(`<h2>🗺️ World map</h2><div class="small muted">${here ? `You're in <b>${esc(here.name)}</b>. Tap a town linked by a red road to travel there.` : 'Find your way back to a town to travel.'} Roads can be dangerous!</div>${svg}<div id="wmInfo" class="small center muted">Tap a town</div>`, (m) => {
+      $$('[data-wn]', m).forEach(g => g.onclick = () => {
+        const n = W.nodes[g.dataset.wn]; const F = RR.FACTIONS[n.faction]; const T = F ? RR.repTier((C.rep || {})[n.faction] || 0) : null; const can = nb.includes(n.key) && C.turn.mode !== 'combat';
+        $('#wmInfo', m).innerHTML = `<b>${esc(n.name)}</b>${F ? ` · ${F.icon} ${esc(F.name)} (${T.icon} ${T.n})` : ''}<br>${n.discovered ? '' : 'Unexplored. '}${can ? `<button class="btn red block" id="wmGo">🐎 Travel to ${esc(n.name)}</button>` : here && n.key === here.key ? "You're here." : 'No direct road from here.'}`;
+        if ($('#wmGo', m)) $('#wmGo', m).onclick = async () => { closeSheet(); try { await act('worldtravel', { to: n.key }); } catch (e) { } };
+      });
+    });
   }
 
   // ---------------- PARTY & DM ----------------
@@ -813,13 +965,37 @@
         <div class="small" style="margin-top:8px">Dungeon Master</div>
         <div class="row wrap">${C.aiActive ? '<span class="tag">🤖 AI is the DM</span>' : C.dmMode === 'ai' ? '<span class="tag gold wrap">🤖 AI DM is waiting for its key — the built-in adventure runs itself, and the creator has DM tools</span>' : `<span class="tag blue">🎭 ${esc((C.members.find(m => m.id === C.dmUserId) || {}).name || 'Human')} is the DM</span>`}
           ${C.isDM ? (C.aiActive ? `<button class="chip" data-dm="human">🎭 Take over</button>` : owner ? `<button class="chip" data-dm="ai" ${C.aiReady ? '' : 'disabled'}>🤖 Hand to AI${C.aiReady ? '' : ' (no key yet)'}</button>` : '') : ''}</div></div>
+      ${owner ? safetyCard() : ''}
       ${C.isDM ? dmPanel() : ''}
       <div style="height:20px"></div></div>`;
     $('#share').onclick = share; if ($('#bPush2')) $('#bPush2').onclick = enablePush;
     $$('[data-peek]').forEach(el => el.onclick = () => { const ch = C.characters[el.dataset.peek]; const tk = C.scene && C.scene.tokens.find(t => t.charId === ch.id); if (tk && ch.ownerId !== C.me) allySheet(tk); });
     $$('[data-pace]').forEach(b => b.onclick = () => act('settings', { pace: b.dataset.pace })); $$('[data-timer]').forEach(b => b.onclick = () => act('settings', { turnTimer: +b.dataset.timer }));
     $$('[data-dm]').forEach(b => b.onclick = () => act('settings', { dmMode: b.dataset.dm }));
-    bindDm(main);
+    bindDm(main); bindSafety(main);
+  }
+  function safetyCard() {
+    const Sf = S.C.safety || { level: 'teen', filter: true, lines: [] };
+    return `<div class="card"><h3>🛡️ Table safety</h3><div class="small muted">Only you (the campaign creator) can see and change this.</div>
+      <div class="small" style="margin-top:6px">Story style</div><div class="chips"><button class="chip ${Sf.level === 'family' ? 'on' : ''}" data-sf="family">👪 Family (8+)</button><button class="chip ${Sf.level !== 'family' ? 'on' : ''}" data-sf="teen">🧑 Teen (PG-13)</button></div>
+      <div class="chips"><button class="chip ${Sf.filter ? 'on' : ''}" id="sfF">🧼 Chat filter ${Sf.filter ? 'on' : 'off'}</button></div>
+      <div class="small">Topics the story should never include (spiders, drowning, clowns…)</div><div class="row"><input id="sfL" value="${esc((Sf.lines || []).join(', '))}" placeholder="spiders, drowning"><button class="btn blue" id="sfSave">Save</button></div>
+      <button class="btn ghost block" id="sfLog">👪 Parent view: read all chat</button>
+      <div class="small muted">Any player can tap 🛑 Pause in the More menu to skip an uncomfortable scene — no questions asked.</div></div>`;
+  }
+  function bindSafety(root) {
+    $$('[data-sf]', root).forEach(b => b.onclick = () => act('safety', { level: b.dataset.sf }));
+    if ($('#sfF', root)) $('#sfF', root).onclick = () => act('safety', { filter: !(S.C.safety || {}).filter });
+    if ($('#sfSave', root)) $('#sfSave', root).onclick = () => act('safety', { lines: $('#sfL', root).value.split(',').map(x => x.trim()).filter(Boolean) });
+    if ($('#sfLog', root)) $('#sfLog', root).onclick = parentView;
+  }
+  function parentView() {
+    const C = S.C; const items = C.log.filter(e => ['chat', 'say', 'do'].includes(e.kind)).slice(-150).reverse();
+    sheet(`<h2>👪 Parent view</h2><div class="small muted">Everything players typed (newest first). The story itself is in the Play tab.</div>
+      <button class="btn blue block" id="pvDl">⬇️ Download the full log</button>
+      <ul class="list pv">${items.map(e => `<li><div><b>${esc(e.who || '?')}</b> <span class="small muted">${e.kind === 'say' ? 'to ' + esc(e.to || '') : e.kind === 'do' ? 'did' : 'chat'} · ${new Date(e.t).toLocaleString()}</span><div>${esc(e.text)}</div></div></li>`).join('') || '<li class="muted">Nothing yet.</li>'}</ul>`, (m) => {
+      $('#pvDl', m).onclick = async () => { try { const res = await fetch(`/api/c/${C.id}/log.txt`, { headers: { authorization: 'Bearer ' + S.token } }); if (!res.ok) throw new Error('Could not download'); const blob = await res.blob(); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = (C.name || 'campaign').replace(/[^a-z0-9]+/gi, '_') + '_log.txt'; a.click(); } catch (e) { toast(e.message, 'err'); } };
+    });
   }
   function dmPanel() {
     const C = S.C; const hum = humanDM(); const heroes = Object.values(C.characters);
