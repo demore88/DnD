@@ -1,0 +1,20 @@
+{
+  "name": "rollcall",
+  "version": "1.0.0",
+  "description": "Roll Call - mobile D&D with turn alerts and an AI Dungeon Master",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.3.0",
+    "web-push": "^4.0.0",
+    "ws": "^8.23.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
