@@ -850,8 +850,24 @@
     });
   }
   function spawnSheet() {
-    sheet(`<h2>👹 Add a monster</h2><div class="small muted">Pick one, then tap the map where it appears.</div><div class="monpick">${Object.keys(RR.BESTIARY).map(k => `<button data-m="${k}">${ART.monsterSVG(k, 60)}<b>${esc(RR.BESTIARY[k].name)}</b><span>CR ${RR.BESTIARY[k].cr}</span></button>`).join('')}</div>`, (m) => {
-      $$('[data-m]', m).forEach(b => b.onclick = () => { S.dmSpawn = b.dataset.m; closeSheet(); S.tab = 'play'; renderTabs(); renderTab(true); toast(`Tap the map to place the ${RR.BESTIARY[b.dataset.m].name}`); });
+    const B = RR.BESTIARY, crn = (k) => RR.crNum ? RR.crNum(B[k].cr) : 0;
+    const all = Object.keys(B).sort((a, b) => crn(a) - crn(b) || B[a].name.localeCompare(B[b].name));
+    const BIOMES = [['', 'All'], ['dungeon', '🏰 Dungeon'], ['cave', '🕳️ Cave'], ['forest', '🌲 Forest'], ['swamp', '🐸 Swamp'], ['mountain', '⛰️ Mountain'], ['coast', '🌊 Coast'], ['road', '🛤️ Road']];
+    const st = { q: '', bio: '', max: 99 };
+    const lvl = Math.max(1, ...Object.values(S.C.characters || {}).map(h => h.level || 1));
+    const list = () => all.filter(k => (!st.bio || (B[k].bio || []).includes(st.bio)) && crn(k) <= st.max && (!st.q || (B[k].name + ' ' + B[k].type).toLowerCase().includes(st.q)));
+    const img = (k) => { const svg = ART.monsterSVG(k, 60); return `<img loading="lazy" alt="" src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}">`; };
+    const draw = (m) => { const l = list(); $('#mpN', m).textContent = `${l.length} monsters`; $('.monpick', m).innerHTML = l.map(k => `<button data-m="${k}">${img(k)}<b>${esc(B[k].name)}</b><span>CR ${B[k].cr}${B[k].boss ? ' · 👑' : ''}</span></button>`).join('') || '<div class="muted small">Nothing matches.</div>';
+      $$('[data-m]', m).forEach(b => b.onclick = () => { S.dmSpawn = b.dataset.m; closeSheet(); S.tab = 'play'; renderTabs(); renderTab(true); toast(`Tap the map to place the ${B[b.dataset.m].name}`); }); };
+    sheet(`<h2>👹 Add a monster</h2><div class="small muted">Pick one, then tap the map where it appears. <span id="mpN"></span></div>
+      <input id="mpQ" placeholder="Search — dragon, undead, goblin…" autocomplete="off">
+      <div class="chips" id="mpB">${BIOMES.map(([k, n]) => `<button class="chip${k === '' ? ' on' : ''}" data-b="${k}">${n}</button>`).join('')}</div>
+      <div class="chips" id="mpC">${[['99', 'Any CR'], [String(Math.max(1, Math.floor(lvl / 2))), 'Easy'], [String(lvl), 'Fair fight'], [String(lvl + 3), 'Deadly']].map(([v, n], i) => `<button class="chip${i === 0 ? ' on' : ''}" data-c="${v}">${n}</button>`).join('')}</div>
+      <div class="monpick"></div>`, (m) => {
+      $('#mpQ', m).oninput = (e) => { st.q = e.target.value.trim().toLowerCase(); draw(m); };
+      $$('[data-b]', m).forEach(b => b.onclick = () => { st.bio = b.dataset.b; $$('[data-b]', m).forEach(x => x.classList.toggle('on', x === b)); draw(m); });
+      $$('[data-c]', m).forEach(b => b.onclick = () => { st.max = +b.dataset.c; $$('[data-c]', m).forEach(x => x.classList.toggle('on', x === b)); draw(m); });
+      draw(m);
     });
   }
   function rewardSheet() {

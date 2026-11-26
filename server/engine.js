@@ -355,8 +355,12 @@ function damage(c, t, amount, dtype, opts = {}) {
   }
   const M = R.BESTIARY[t.mkey] || {};
   const traits = M.traits || [];
-  if (traits.includes('resist_weapons') && opts.weapon && !opts.magic) dmg = Math.floor(dmg / 2);
-  if (traits.includes('vuln_bludgeoning') && dtype === 'bludgeoning') dmg *= 2;
+  const phys = ['bludgeoning', 'piercing', 'slashing'].includes(dtype);
+  const has = (arr) => (arr || []).some(k => k === dtype || (k === 'weapons' && phys && opts.weapon && !opts.magic) || (k === 'nonmagical' && phys && !opts.magic));
+  if (has(M.immune)) { if (!t.immNote) { t.immNote = {}; } if (!t.immNote[dtype]) { t.immNote[dtype] = 1; addLog(c, 'system', `🛡️ ${t.name} is immune to ${dtype}!`); } return 0; }
+  if ((traits.includes('resist_weapons') && opts.weapon && !opts.magic) || has(M.resist)) dmg = Math.floor(dmg / 2);
+  if ((traits.includes('vuln_bludgeoning') && dtype === 'bludgeoning') || has(M.vuln)) dmg *= 2;
+  if (M.regen && (M.regenStop || ['fire', 'acid', 'radiant']).includes(dtype)) t.noRegen = c.turn.round;
   t.hp -= dmg; removeCond(c, t, 'asleep'); if (hasCond(c, t, 'charmed')) removeCond(c, t, 'charmed');
   if (t.hp <= 0) {
     if (traits.includes('undead_fortitude') && dtype !== 'radiant' && !opts.crit && !t.fortUsed) { const r = d20().pick + 3; if (r >= 5 + dmg) { t.hp = 1; t.fortUsed = true; addLog(c, 'system', `🧟 ${t.name} refuses to stay down!`); return dmg; } }
@@ -618,6 +622,7 @@ function runMonsterTurns(c) {
 }
 function monsterTurn(c, m) {
   const s = scene(c); const M = R.BESTIARY[m.mkey] || {}; tickConds(c, m);
+  if (M.regen && m.hp > 0 && m.hp < m.maxHp) { if (m.noRegen != null && m.noRegen >= c.turn.round - 1) { addLog(c, 'system', `🔥 ${m.name}'s wounds smoke — it can't regenerate!`); m.noRegen = null; } else { const h = Math.min(M.regen, m.maxHp - m.hp); m.hp += h; addLog(c, 'system', `🩸 ${m.name}'s wounds knit closed (+${h} HP).`, { fx: { k: 'heal', t: m.id, amt: h } }); } }
   if (isHelpless(c, m)) { addLog(c, 'system', `${m.name} is ${hasCond(c, m, 'asleep') ? 'fast asleep 💤' : 'paralyzed'}.`); return; }
   const pcs = s.tokens.filter(t => t.kind === 'pc' && isUp(c, t));
   if (!pcs.length) return;
@@ -655,7 +660,7 @@ function monsterTurn(c, m) {
         if (dmg) damage(c, p, dmg, sp.type || 'force'); if (!ok && sp.cond && isAlive(c, p)) addCond(c, p, sp.cond, sp.rounds || 1, m.id); });
       return;
     }
-    if (sp.kind === 'attack') { const tgt = pcs.filter(p => cheb(p, m) <= (sp.range || 6) && !hasCond(c, p, sp.cond))[0]; if (!tgt) continue; m.recharge[sp.n] = false; const r = d20().pick + sp.hit; const ac = acOf(c, tgt); if (r >= ac) { addCond(c, tgt, sp.cond, sp.rounds || 1, m.id); addLog(c, 'roll', `${m.name} shoots a ${sp.n} at ${tgt.name}: ${r} vs AC ${ac} — ${tgt.name} is ${R.CONDITIONS[sp.cond]?.name.toLowerCase()}!`, { fx: { k: 'atk', a: m.id, t: tgt.id, hit: true, dmg: 0, ranged: true } }); } else addLog(c, 'roll', `${m.name} shoots a ${sp.n} at ${tgt.name}: ${r} vs AC ${ac} — miss!`, { fx: { k: 'atk', a: m.id, t: tgt.id, hit: false, ranged: true } }); return; }
+    if (sp.kind === 'attack') { const tgt = pcs.filter(p => cheb(p, m) <= (sp.range || 6) && !hasCond(c, p, sp.cond))[0]; if (!tgt) continue; m.recharge[sp.n] = false; const r = d20().pick + sp.hit; const ac = acOf(c, tgt); if (r >= ac) { let dm = 0; if (sp.dmg) dm = damage(c, tgt, rollDice(sp.dmg).total, sp.type || 'bludgeoning', { attack: true, attacker: m }); if (sp.cond) addCond(c, tgt, sp.cond, sp.rounds || 1, m.id); addLog(c, 'roll', `${m.name} uses ${sp.n} on ${tgt.name}: ${r} vs AC ${ac} — hit${dm ? ` for ${dm} ${sp.type || ''}` : ''}${sp.cond ? `, ${tgt.name} is ${R.CONDITIONS[sp.cond]?.name.toLowerCase()}` : ''}!`, { fx: { k: 'atk', a: m.id, t: tgt.id, hit: true, dmg: dm, ranged: cheb(tgt, m) > 1 } }); } else addLog(c, 'roll', `${m.name} uses ${sp.n} on ${tgt.name}: ${r} vs AC ${ac} — miss!`, { fx: { k: 'atk', a: m.id, t: tgt.id, hit: false, ranged: true } }); return; }
   }
   // choose a target: reachable, prefer wounded/low AC; bosses prefer casters
   const melee = (M.att || []).filter(a => (a.range || 1) <= 1); const rangedAtt = (M.att || []).filter(a => (a.range || 1) > 1);

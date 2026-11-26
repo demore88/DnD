@@ -370,5 +370,5 @@
 
   const api = { ABILITIES, ABILITY_NAMES, SKILLS, RACES, CLASSES, FEATURES, SPELLS, CONDITIONS, ITEMS, WEAPONS, ARMOR, BESTIARY, ENCOUNTER_TABLES, BOSSES, XP_LEVELS, STANDARD_ARRAY,
     SHOP_GENERAL, SHOP_SMITH, SHOP_TEMPLE, ADVENTURE, mod, prof, levelForXp, slotTable, maxSpellLevel, classSpells, featuresAt, parseDice, cantripDice, computeAC };
-  if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.RULES = api;
+  if (typeof module !== 'undefined' && module.exports) { require('./bestiary2.js')(api); module.exports = api; } else root.RULES = api;
 })(typeof window !== 'undefined' ? window : globalThis);
