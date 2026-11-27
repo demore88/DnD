@@ -198,5 +198,7 @@
     m.querySelectorAll('[data-snd]').forEach(r => r.oninput = () => { V[r.dataset.snd] = r.value / 100; save(); });
     const b = m.querySelector('#sndMute'); if (b) b.onclick = () => { V.mute = !V.mute; save(); b.classList.toggle('on', V.mute); b.textContent = V.mute ? '🔇 Muted' : '🔈 Mute all'; if (!V.mute) { unlock(); sfx('turn'); } };
   }
-  root.SOUND = { sfx, onLog, update, setMood, setAmb, settingsHTML, bindSettings, unlock, MOODS: ['town', 'explore', 'dungeon', 'combat', 'boss'], get muted() { return V.mute; } };
+  let ducked = false;
+  function duck(on) { ducked = on; if (!ctx) return; const t = T(); ['music', 'amb'].forEach(k => { const g = bus[k].gain; g.cancelScheduledValues(t); g.setValueAtTime(g.value, t); g.linearRampToValueAtTime((k === 'music' ? V.music : V.amb) * (on ? 0.3 : 1), t + 0.4); }); if (audioEl) audioEl.volume = Math.min(1, (V.mute ? 0 : V.master) * V.music * 1.6 * (on ? 0.3 : 1)); }
+  root.SOUND = { duck, sfx, onLog, update, setMood, setAmb, settingsHTML, bindSettings, unlock, MOODS: ['town', 'explore', 'dungeon', 'combat', 'boss'], get muted() { return V.mute; } };
 })(typeof window !== 'undefined' ? window : globalThis);

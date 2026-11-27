@@ -27,6 +27,7 @@
   }
   function closeSheet() { sheetRoot.innerHTML = ''; }
   const sheetOpen = () => !!sheetRoot.innerHTML;
+  document.addEventListener('click', (ev) => { const b = ev.target.closest && ev.target.closest('[data-say]'); if (!b || !S.C) return; ev.stopPropagation(); const e = S.C.log.find(x => String(x.id) === b.dataset.say); if (e) NARR.say(e); }, true);
   document.addEventListener('pointerdown', (e) => { if (typeof SOUND !== 'undefined' && e.target.closest && e.target.closest('button, .opt, .chip')) SOUND.sfx('tap'); }, { passive: true });
   function logout() { localStorage.removeItem('rc_token'); S.token = null; S.me = null; if (S.ws) S.ws.close(); showSplash(true); }
   const svgImg = (svg, cls = '') => `<span class="pic ${cls}">${svg}</span>`;
@@ -145,13 +146,13 @@
     sheet(`<h2>⚙️ Account</h2><div class="small muted">Signed in as <b>${esc(S.me?.name || '')}</b></div>
       <h3>Change password</h3><input id="acO" type="password" placeholder="Current password"><input id="acN" type="password" placeholder="New password"><button class="btn blue block" id="acGo">Change password</button>
       <button class="btn ghost block" id="acRec">🔑 Make a new recovery code</button>
-      <h3>🔊 Sound</h3>${typeof SOUND !== 'undefined' ? SOUND.settingsHTML() : ''}
+      <h3>🔊 Sound</h3>${typeof SOUND !== 'undefined' ? SOUND.settingsHTML() : ''}${typeof NARR !== 'undefined' ? NARR.settingsHTML() : ''}
       <h3>🎼 Your music</h3><div class="small muted">Upload your own tracks. They replace the built-in music in every campaign <b>you</b> create, for everyone at the table.</div><div id="musList" class="small muted">Loading…</div>
       <button class="btn red block" id="acOut">Log out</button>`, (m) => {
       $('#acGo', m).onclick = async () => { try { await api('/password', { old: $('#acO', m).value, pass: $('#acN', m).value }); toast('Password changed'); closeSheet(); } catch (e) { toast(e.message, 'err'); } };
       $('#acRec', m).onclick = async () => { try { const r = await api('/recovery', {}); recoverySheet(r.recovery); } catch (e) { toast(e.message, 'err'); } };
       $('#acOut', m).onclick = () => { closeSheet(); logout(); };
-      if (typeof SOUND !== 'undefined') SOUND.bindSettings(m);
+      if (typeof SOUND !== 'undefined') SOUND.bindSettings(m); if (typeof NARR !== 'undefined') NARR.bindSettings(m);
       const MN = { town: '🏘️ Town', explore: '🌲 Exploring', dungeon: '🕯️ Dungeon', combat: '⚔️ Combat', boss: '🐉 Boss fight' };
       const drawMus = (mu) => { $('#musList', m).innerHTML = `<ul class="list">${Object.keys(MN).map(k => `<li><span>${MN[k]}</span><span>${mu[k] ? `<button class="chip" data-mplay="${k}">▶️</button><button class="chip" data-mdel="${k}">✕</button>` : ''}<label class="chip">${mu[k] ? 'Replace' : '⬆️ Upload'}<input type="file" accept="audio/*" data-mup="${k}" hidden></label></span></li>`).join('')}</ul>`;
         $$('[data-mup]', m).forEach(inp => inp.onchange = async () => { const f = inp.files[0]; if (!f) return; if (f.size > 40e6) return toast('Max 40 MB per track', 'err'); toast('Uploading…'); try { const r = await fetch('/api/music/' + inp.dataset.mup, { method: 'POST', headers: { authorization: 'Bearer ' + S.token, 'content-type': f.type || 'audio/mpeg' }, body: f }); const j = await r.json(); if (!r.ok) throw new Error(j.error); toast('🎵 Saved'); drawMus(j.music); } catch (e) { toast(e.message, 'err'); } });
@@ -163,7 +164,7 @@
 
   // ---------------- home ----------------
   async function loadHome() { try { const r = await api('/me'); S.me = r.user; S.campaigns = r.campaigns; S.aiReady = r.aiReady; if (S.view === 'home') renderHome(); } catch (e) { } }
-  function showHome() { S.view = 'home'; S.C = null; if (typeof SOUND !== 'undefined') SOUND.update(null); BOARD.redraw(); if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ t: 'sub', campaignId: null })); history.replaceState(null, '', '/'); renderHome(); loadHome(); }
+  function showHome() { S.view = 'home'; S.C = null; if (typeof SOUND !== 'undefined') SOUND.update(null); if (typeof NARR !== 'undefined') NARR.stop(); BOARD.redraw(); if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ t: 'sub', campaignId: null })); history.replaceState(null, '', '/'); renderHome(); loadHome(); }
   function renderHome() {
     const me = S.me || {}; const pushOn = me.push && 'Notification' in window && Notification.permission === 'granted';
     app.innerHTML = `<div class="home"><div class="home-top"><div class="brand">⚔️ Roll Call</div><button class="chip" id="bOut">⚙️ ${esc(me.name || '')}</button></div>
@@ -232,7 +233,7 @@
     renderHud(); renderTabs(); renderTab(); if (typeof SOUND !== 'undefined') SOUND.update(C);
   }
   function handleFresh(e) {
-    if (e.fx) BOARD.playFx(e); if (typeof SOUND !== 'undefined') SOUND.onLog(e);
+    if (e.fx) BOARD.playFx(e); if (typeof SOUND !== 'undefined') SOUND.onLog(e); if (typeof NARR !== 'undefined') NARR.onLog(e);
     const me = S.C.me; const mt = myTok();
     if (e.fx && (e.fx.k === 'check' || e.fx.k === 'free') && e.fx.uid === me) diceShow(e.fx.pick || e.fx.tot, e.fx.tot, e.fx.ok, e.fx.k === 'free');
     if (e.fx && e.fx.k === 'atk' && mt && e.fx.a === mt.id && e.fx.pick) diceShow(e.fx.pick, e.fx.tot, e.fx.hit, false, e.fx.crit);
@@ -331,14 +332,15 @@
 
   // story log
   const HIDE = new Set(['move']);
+  const sayBtn = (e) => typeof NARR !== 'undefined' ? `<button class="saybtn" data-say="${e.id}" aria-label="Read aloud">🔊</button>` : '';
   function entryHTML(e) {
     const C = S.C; const mine = e.uid === C.me;
     switch (e.kind) {
       case 'title': return `<div class="e title"><div class="e-k">Chapter</div>${esc(e.text)}</div>`;
       case 'scene': return `<div class="e scene">📍 ${esc(e.text)}${e.desc ? `<div class="e-sub">${esc(e.desc)}</div>` : ''}</div>`;
-      case 'narration': return `<div class="e narr">${e.who && e.who !== 'DM' ? `<div class="e-k">${esc(e.who)}</div>` : ''}${esc(e.text)}</div>`;
-      case 'npc': { const n = C.npcs[e.npc]; return `<div class="e npc">${n ? npcPic(n, 34) : ''}<div><div class="e-k">${esc(e.who)}</div>“${esc(e.text)}”</div></div>`; }
-      case 'clue': return `<div class="e clue"><div class="e-k">🔎 ${esc(e.who || 'Clue')}</div>${esc(e.text)}</div>`;
+      case 'narration': return `<div class="e narr">${sayBtn(e)}${e.who && e.who !== 'DM' ? `<div class="e-k">${esc(e.who)}</div>` : ''}${esc(e.text)}</div>`;
+      case 'npc': { const n = C.npcs[e.npc]; return `<div class="e npc">${sayBtn(e)}${n ? npcPic(n, 34) : ''}<div><div class="e-k">${esc(e.who)}</div>“${esc(e.text)}”</div></div>`; }
+      case 'clue': return `<div class="e clue">${sayBtn(e)}<div class="e-k">🔎 ${esc(e.who || 'Clue')}</div>${esc(e.text)}</div>`;
       case 'say': case 'action': return `<div class="e said ${mine ? 'mine' : ''}"><div class="e-k">${esc(e.who)}${e.to ? ' → ' + esc(e.to) : ''}</div>${e.kind === 'say' ? '“' + esc(e.text) + '”' : esc(e.text)}</div>`;
       case 'chat': return `<div class="e chat ${mine ? 'mine' : ''}"><b>${esc(e.who)}:</b> ${esc(e.text)}</div>`;
       case 'roll': return `<div class="e roll">${esc(e.text)}</div>`;
@@ -653,10 +655,10 @@
         <button class="btn ghost block" id="mCheck">🎯 Make a skill check</button>
         <button class="btn ghost block" id="mDice">🎲 Roll dice</button>
         <button class="btn ghost block" id="mChat">💬 Party chat</button>
-        <button class="btn ghost block" id="mSnd">🔊 Sound & music</button>
+        <button class="btn ghost block" id="mSnd">🔊 Sound & narrator</button>
         <button class="btn ghost block" id="mX">🛑 Pause / skip this scene</button>
         ${humanDM() ? `<button class="btn blue block" id="mDM">📜 DM tools</button>` : ''}</div>`, () => {
-        $('#mGather').onclick = () => { closeSheet(); act('gather', {}); }; $('#mCheck').onclick = checkSheet; $('#mDice').onclick = diceTray; $('#mChat').onclick = () => composer('chat'); $('#mX').onclick = xcard; $('#mSnd').onclick = () => sheet(`<h2>🔊 Sound & music</h2>${SOUND.settingsHTML()}<div class="small muted">Your own tracks can be uploaded from ⚙️ on the home screen.</div>`, (mm) => SOUND.bindSettings(mm)); if ($('#mDM')) $('#mDM').onclick = dmSheet;
+        $('#mGather').onclick = () => { closeSheet(); act('gather', {}); }; $('#mCheck').onclick = checkSheet; $('#mDice').onclick = diceTray; $('#mChat').onclick = () => composer('chat'); $('#mX').onclick = xcard; $('#mSnd').onclick = () => sheet(`<h2>🔊 Sound & narrator</h2>${SOUND.settingsHTML()}${NARR.settingsHTML()}<div class="small muted">Your own music can be uploaded from ⚙️ on the home screen.</div>`, (mm) => { SOUND.bindSettings(mm); NARR.bindSettings(mm); }); if ($('#mDM')) $('#mDM').onclick = dmSheet;
       }); return;
     }
     const b = (k, label, desc, cost, ok = true) => `<button class="spell ${ok ? '' : 'off'}" data-k="${k}" data-bonus="${cost === 'bonus' ? 1 : ''}" ${ok ? '' : 'disabled'}><div class="row"><b class="grow">${label}</b><span class="tag ${cost === 'bonus' ? 'blue' : ''}">${cap(cost)}</span></div><div class="small muted">${desc}</div></button>`;
@@ -1062,6 +1064,7 @@
   async function start() {
     regSW();
     try { const r = await api('/me'); S.me = r.user; S.campaigns = r.campaigns; S.aiReady = r.aiReady; } catch (e) { showSplash(true); return; }
+    if (typeof NARR !== 'undefined') NARR.setToken(S.token);
     connectWS(); const c = new URLSearchParams(location.search).get('c'); if (c) openCampaign(c); else showHome();
   }
   window.RC = S;

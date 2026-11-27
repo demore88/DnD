@@ -94,6 +94,30 @@ app.post('/api/music/:mood', auth, express.raw({ type: 'audio/*', limit: '40mb' 
   u.music[mood] = '/music/' + name; save(); Object.values(db.campaigns).filter(c => c.ownerId === u.id).forEach(c => broadcast(c)); res.json({ ok: true, music: u.music });
 });
 app.delete('/api/music/:mood', auth, (req, res) => { const u = req.user; if (u.music && u.music[req.params.mood]) { try { fs.unlinkSync(path.join(DATA_DIR, 'music', path.basename(u.music[req.params.mood]))); } catch (e) { } delete u.music[req.params.mood]; save(); Object.values(db.campaigns).filter(c => c.ownerId === u.id).forEach(c => broadcast(c)); } res.json({ ok: true, music: u.music || {} }); });
+// ---------- premium narrator voices (optional: set ELEVENLABS_API_KEY on the server) ----------
+const TTS_KEY = process.env.ELEVENLABS_API_KEY || '';
+const TTS_DIR = path.join(DATA_DIR, 'tts'); fs.mkdirSync(TTS_DIR, { recursive: true });
+const TTS_NARRATOR = process.env.TTS_NARRATOR_VOICE || 'JBFqnCBsd6RMkjVDRZzb';
+const TTS_POOL = ['pNInz6obpgDQGcFmaJgB', 'EXAVITQu4vr4xnAQ', 'VR6AewLTigWG4xSOukaG', 'MF3mGyEYCl7XYWbV9V6O', 'TxGEqnHWrfWFTfGW9XjX', 'AZnzlk1XvdvUeBnXmlld', 'ErXwobaYiN019PkySvjV', 'yoZ06aMxZJJ28mfd3POQ', '21m00Tcm4TlvDq8ikWAM'];
+const ttsUse = new Map(); const TTS_DAILY = parseInt(process.env.TTS_DAILY_CHARS || '40000', 10);
+app.get('/api/tts/status', auth, (req, res) => res.json({ premium: !!TTS_KEY }));
+app.post('/api/tts', auth, async (req, res) => {
+  if (!TTS_KEY) return bad(res, 'Premium voices are not set up', 404);
+  const text = String(req.body.text || '').slice(0, 600).trim(); if (!text) return bad(res, 'Nothing to say');
+  const who = String(req.body.voice || 'dm'); let h = 7; for (const ch of who) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const voice = who === 'dm' ? TTS_NARRATOR : TTS_POOL[h % TTS_POOL.length];
+  const file = path.join(TTS_DIR, crypto.createHash('sha1').update(voice + '|' + text).digest('hex') + '.mp3');
+  if (fs.existsSync(file)) { res.setHeader('content-type', 'audio/mpeg'); return res.send(fs.readFileSync(file)); }
+  const day = new Date().toISOString().slice(0, 10); const k = req.user.id + day; const used = ttsUse.get(k) || 0;
+  if (used + text.length > TTS_DAILY) return bad(res, 'Daily premium voice limit reached', 429); ttsUse.set(k, used + text.length);
+  try {
+    const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice}?output_format=mp3_44100_64`, { method: 'POST', headers: { 'xi-api-key': TTS_KEY, 'content-type': 'application/json', accept: 'audio/mpeg' }, body: JSON.stringify({ text, model_id: process.env.TTS_MODEL || 'eleven_flash_v2_5' }) });
+    if (!r.ok) return bad(res, 'Voice service error ' + r.status, 502);
+    const buf = Buffer.from(await r.arrayBuffer()); fs.writeFileSync(file, buf);
+    try { const files = fs.readdirSync(TTS_DIR); if (files.length > 3000) files.map(f => ({ f, t: fs.statSync(path.join(TTS_DIR, f)).mtimeMs })).sort((a, b) => a.t - b.t).slice(0, 500).forEach(x => fs.unlinkSync(path.join(TTS_DIR, x.f))); } catch (e) { }
+    res.setHeader('content-type', 'audio/mpeg'); res.send(buf);
+  } catch (e) { bad(res, 'Voice service unreachable', 502); }
+});
 app.post('/api/password', auth, (req, res) => {
   const u = req.user; if (hashPass(req.body.old || '', u.salt) !== u.pass) return bad(res, 'Your current password is wrong');
   const p = String(req.body.pass || ''); if (p.length < 4) return bad(res, 'New password needs 4+ characters');

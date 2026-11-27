@@ -219,3 +219,6 @@ input[type=file] { padding: 8px; font-size: 13px; }
 .bc-in { text-align: center; color: #fff4d6; animation: bossin .6s cubic-bezier(.2,1.6,.4,1); } .bc-in img { width: 220px; height: 220px; filter: drop-shadow(0 8px 0 rgba(0,0,0,.4)); }
 .bc-k { font: 900 16px system-ui; letter-spacing: 6px; color: #ff8a3d; } .bc-n { font: 900 32px Georgia, serif; text-shadow: 0 3px 0 #000; } .bc-s { opacity: .8; font-size: 14px; max-width: 300px; margin: 4px auto; }
 @keyframes bossin { from { transform: scale(.4) rotate(-6deg); opacity: 0; } }
+.saybtn { float: right; background: none; border: 0; font-size: 15px; opacity: .55; padding: 0 0 4px 8px; cursor: pointer; } .saybtn:active { opacity: 1; transform: scale(1.2); }
+.e.npc .saybtn { order: 3; margin-left: auto; }
+#nVoice { width: 100%; margin: 4px 0 8px; }
